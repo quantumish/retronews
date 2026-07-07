@@ -857,6 +857,10 @@ def cmd_lb_see_tags(app: AppState) -> None:
     user_input = app_prompt(app, "Stories for tag(s) (comma to combine): ")
     app_load_group(app, lb_group(truncate_visible(user_input), "t/"+user_input))
 
+def cmd_lb_see_user(app: AppState) -> None:
+    user_input = app_prompt(app, "Stories posted by user: ")
+    app_load_group(app, lb_group(truncate_visible(user_input), f"~{user_input}/stories"))
+
 def cmd_open(app: AppState) -> None:
     if (msg := app.selected_message) is None:
         return
@@ -1434,7 +1438,7 @@ def app_prompt(app: AppState, prompt: str) -> str:
 
 def app_render_index_row(app: AppState, row: int, message: Message) -> None:
     cols = app.layout.cols
-    date = message.date.strftime("%Y-%m-%d %H:%M")
+    date = message.date.strftime("%m-%d %H:%M")
     author = (message.author or "<unknown>")[:10].ljust(10)
 
     is_response = message.title.startswith("Re:") and not message.is_thread
@@ -1456,13 +1460,12 @@ def app_render_index_row(app: AppState, row: int, message: Message) -> None:
         subject_attr = app.colors["starred_subject"] if message.flags.starred else app.colors["default"]
         subject_attr = subject_attr | read_attr
 
-        app.screen.chgat(row, 1, 16, app.colors["date"] | read_attr)
-        app.screen.chgat(row, 21, 10, app.colors["author"] | read_attr)
-        app.screen.chgat(row, 35, 4, app.colors["unread_comments"] | read_attr)
+        app.screen.chgat(row, 1, len(date), app.colors["date"] | read_attr)
+        app.screen.chgat(row, len(date)+5, 10, app.colors["author"] | read_attr)
+        app.screen.chgat(row, len(date)+19, 4, app.colors["unread_comments"] | read_attr)
         app.screen.chgat(row, 42, len(message.index_tree), app.colors["tree"])
         app.screen.chgat(row, 42 + len(message.index_tree), cols - 42 - len(message.index_tree), subject_attr)
-
-
+        
 def app_render_index(app: AppState) -> None:
     height = app.layout.index_height
 
