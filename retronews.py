@@ -32,7 +32,6 @@ from datetime import datetime
 from functools import partial, reduce
 from textwrap import wrap
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Generator,
@@ -153,19 +152,14 @@ URL_REX = re.compile(r"(https?://[^\s\)\"<,]+[^\s\)\"<,\.])")
 
 # Recognize HN message URLs
 HN_URL_REX = re.compile(r"^https://news\.ycombinator\.com/item\?id=(\d+)$")
+LB_URL_REX = re.compile(r"^https://lobste\.rs/s/([a-z0-9]{6}).*$")
 
 # FIXME: Use TypeAlias after migrating to Python 3.10
 DB = NewType("DB", "sqlite3.Connection")
 
-if TYPE_CHECKING:
-    from _curses import _CursesWindow
-
-    Window = _CursesWindow
-else:
-    Window = Any
+Window = NewType("Window", "curses.window")
 
 T = TypeVar("T")
-
 
 class ExitException(Exception):
     code: int
@@ -301,7 +295,6 @@ class HNSearchHit(TypedDict):
 
 class HNEntry(TypedDict):
     author: Optional[str]
-    # FIXME: Recursive declarations are not yet supported in TypedDicts
     children: list[Any]
     created_at_i: int
     id: int
@@ -979,6 +972,17 @@ def db_load_starred_thread_ids(db: DB, page: int = 1) -> list[str]:
     return [row["thread_id"] for row in db.execute(sql, (page_size, offset))]
 
 
+def msg_populate_total_count(msg: Message):
+    children = msg.children or []
+    msg.total_count = 0
+    
+    if len(children) == 0:
+        return
+
+    for child in children:
+        msg_populate_total_count(child)
+        msg.total_count += 1 + child.total_count
+
 def msg_flatten_thread(
     msg: Message, prefix: str = "", is_last_child: bool = False, ascii: bool = False
 ) -> Generator[Message, None, None]:
@@ -1192,9 +1196,12 @@ def group_fetch_thread(thread_id: str) -> Message:
 def group_for_msg_url(url: str) -> Group:
     if (match := HN_URL_REX.match(url)) is not None:
         msg_id = match[1]
-        return Group(label="", fetch=lambda *x: hn_fetch_threads_by_id([msg_id]))
+        return Group(label=msg_id, fetch=lambda *x: [hn_fetch_thread(msg_id)])
+    elif (match := LB_URL_REX.match(url)) is not None:
+        msg_id = match[1]
+        return Group(label=msg_id, fetch=lambda *x: [lb_fetch_thread(msg_id)])
 
-    msg = "Unknown URL, available patterns: \n" + "\n".join(f"- {r.pattern}" for r in [HN_URL_REX])
+    msg = "Unknown URL, available patterns: \n" + "\n".join(f"- {r.pattern}" for r in [HN_URL_REX, LB_URL_REX])
     raise ExitException(1, msg)
 
 
