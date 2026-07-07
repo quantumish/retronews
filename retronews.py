@@ -32,6 +32,7 @@ from datetime import datetime
 from functools import partial, reduce
 from textwrap import wrap
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Generator,
@@ -157,7 +158,12 @@ LB_URL_REX = re.compile(r"^https://lobste\.rs/s/([a-z0-9]{6}).*$")
 # FIXME: Use TypeAlias after migrating to Python 3.10
 DB = NewType("DB", "sqlite3.Connection")
 
-Window = NewType("Window", "curses.window")
+if TYPE_CHECKING:
+    from _curses import _CursesWindow
+
+    Window = _CursesWindow
+else:
+    Window = Any
 
 T = TypeVar("T")
 
@@ -295,6 +301,7 @@ class HNSearchHit(TypedDict):
 
 class HNEntry(TypedDict):
     author: Optional[str]
+    # FIXME: Recursive declarations are not yet supported in TypedDicts
     children: list[Any]
     created_at_i: int
     id: int
