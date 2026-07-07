@@ -46,6 +46,8 @@ from typing import (
     overload,
 )
 
+USER_AGENT: str = "retronews"
+
 KEY_BINDINGS: dict[int, Callable[["AppState"], None]] = {
     ord("q"): lambda app: cmd_quit(app),
     ord("?"): lambda app: cmd_help(app),
@@ -656,7 +658,10 @@ def html_render(html: str) -> str:
 def fetch(url: str) -> str:
     logging.debug(f"Fetching '{url}'...")
 
-    headers = {"User-Agent": "retronews"}
+    headers = {}
+    if USER_AGENT is not None:
+        headers["User-Agent"] = USER_AGENT
+        
     req = urllib.request.Request(url, headers=headers)
     resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read().decode()
 
@@ -838,6 +843,19 @@ def cmd_load_page(app: AppState) -> None:
     elif len(user_input) > 0:
         app_show_flash(app, "Invalid page number")
 
+def lb_group(name: str, path: str):
+    return Group(label=name, fetch=lambda db, page: lb_fetch_threads(path, page))
+
+MAX_DISPLAY_LENGTH = 25
+def truncate_visible(string: str):
+    if len(string) > MAX_DISPLAY_LENGTH:
+        return string[:MAX_DISPLAY_LENGTH] + "..."
+    else:
+        return string
+
+def cmd_lb_see_tags(app: AppState) -> None:
+    user_input = app_prompt(app, "Stories for tag(s) (comma to combine): ")
+    app_load_group(app, lb_group(truncate_visible(user_input), "t/"+user_input))
 
 def cmd_open(app: AppState) -> None:
     if (msg := app.selected_message) is None:
@@ -1094,7 +1112,12 @@ def hn_fetch_threads_by_id(thread_ids: list[str]) -> list[Message]:
 def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
     rex = re.compile(r'href="item\?id=(\d+)"')
 
-    html = fetch(f"https://news.ycombinator.com/{group}?p={page}")
+    url = f"https://news.ycombinator.com/{group}"
+    # HN seems to be trigger-happy about sending 429s to some paginated requests with weird user agents
+    if page != 1:
+        url += f"?p={page}"
+    
+    html = fetch(url)
     thread_ids = list(dict.fromkeys(match.group(1) for match in rex.finditer(html)))
 
     return hn_fetch_threads_by_id(thread_ids)
