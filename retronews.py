@@ -6,12 +6,13 @@
 # it under the terms of the GNU General Public License version 2 as published by
 # the Free Software Foundation.
 #
+from __future__ import annotations
 
 import sys
 
-if sys.version_info < (3, 9):
-    sys.stderr.write("Python 3.9 or newer is required.\n")
-    sys.exit(1)
+# if sys.version_info < (3, 9):
+#     sys.stderr.write("Python 3.9 or newer is required.\n")
+#     sys.exit(1)
 
 import argparse
 import curses
@@ -48,7 +49,7 @@ from typing import (
 
 USER_AGENT: str = "retronews"
 
-KEY_BINDINGS: dict[int, Callable[["AppState"], None]] = {
+KEY_BINDINGS: dict = {
     ord("q"): lambda app: cmd_quit(app),
     ord("?"): lambda app: cmd_help(app),
     ord("\n"): lambda app: cmd_open(app),
@@ -77,7 +78,8 @@ KEY_BINDINGS: dict[int, Callable[["AppState"], None]] = {
     curses.KEY_PPAGE: lambda app: cmd_page_up(app),
     curses.KEY_NPAGE: lambda app: cmd_page_down(app),
     curses.KEY_RESIZE: lambda app: cmd_resize(app),
-} | {ord(str(i)): lambda app, i=i: cmd_load_tab(app, i) for i in range(1, 10)}
+}
+KEY_BINDINGS.update({ord(str(i)): lambda app, i=i: cmd_load_tab(app, i) for i in range(1, 10)})
 
 HELP_MENU = "q:Quit  ?:Help  p:Prev  n:Next  N:Next-Unread  j:Down  k:Up  x:Close  s:Star"
 
@@ -123,7 +125,7 @@ Color = Literal[
     "url",
 ]
 
-COLORS: dict[Color, tuple[int, int]] = {
+COLORS: dict = {
     "author": (curses.COLOR_YELLOW, -1),
     "code": (curses.COLOR_GREEN, -1),
     "cursor": (curses.COLOR_BLACK, curses.COLOR_CYAN),
@@ -198,10 +200,10 @@ class ExitException(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class Provider:
-    fetch_thread: Callable[[str], "Message"]
-    fetch_threads_by_id: Callable[[list[str]], list["Message"]]
+    fetch_thread: Callable
+    fetch_threads_by_id: Callable
 
-PROVIDERS: dict[str, Provider] = {
+PROVIDERS: dict = {
     "hn": Provider(
         fetch_thread=lambda msg_id: hn_fetch_thread(msg_id),
         fetch_threads_by_id=lambda msg_ids: hn_fetch_threads_by_id(msg_ids),
@@ -216,11 +218,11 @@ PROVIDERS: dict[str, Provider] = {
 @dataclasses.dataclass(frozen=True)
 class Group:
     label: str
-    fetch: Callable[[DB, int], list["Message"]]
+    fetch: Callable
     page: int = 1
 
 
-GROUP_TABS: list[Group] = [
+GROUP_TABS: list = [
     Group(label="Front HN", fetch=lambda db, page: hn_fetch_threads("news", page)),
     Group(label="New HN", fetch=lambda db, page: hn_fetch_new_threads(page)),
     Group(label="Ask HN", fetch=lambda db, page: hn_fetch_threads("ask", page)),
@@ -243,12 +245,12 @@ class Message:
     thread_id: str
     content_location: str
     date: datetime
-    author: Optional[str]
+    author: str
     title: str
-    body: Optional[str] = None
-    lines: list[str] = dataclasses.field(default_factory=list)
-    parent: Optional["Message"] = None
-    children: Optional[list["Message"]] = None
+    body: str = None
+    lines: str = dataclasses.field(default_factory=list)
+    parent: Message = None
+    children: list = None
     flags: MessageFlags = dataclasses.field(default_factory=MessageFlags)
     read_comments: int = 0
     total_comments: int = 0
@@ -280,9 +282,9 @@ class Layout:
     top_menu_row: int = 0
     index_start: int = 1
     index_height: int = 0
-    middle_menu_row: Optional[int] = None
-    pager_start: Optional[int] = None
-    pager_height: Optional[int] = None
+    middle_menu_row: int = None
+    pager_start: int = None
+    pager_height: int = None
     bottom_menu_row: int = 0
     flash_menu_row: int = 0
 
@@ -294,38 +296,38 @@ class AppState:
     group: Group
     ascii: bool = False
     monochrome: bool = False
-    colors: dict[Color, int] = dataclasses.field(default_factory=dict)
-    messages: list[Message] = dataclasses.field(default_factory=list)
-    messages_by_id: dict[str, Message] = dataclasses.field(default_factory=dict)
-    selected_message: Optional[Message] = None
-    marked_message_id: Optional[str] = None
+    colors: dict = dataclasses.field(default_factory=dict)
+    messages: list = dataclasses.field(default_factory=list)
+    messages_by_id: dict = dataclasses.field(default_factory=dict)
+    selected_message: Message = None
+    marked_message_id: str = None
     layout: Layout = dataclasses.field(default_factory=Layout)
     pager_visible: bool = False
     pager_offset: int = 0
     raw_mode: bool = False
-    flash: Optional[str] = None
+    flash: str = None
 
 
 class HNSearchHit(TypedDict):
     objectID: int
-    author: Optional[str]
+    author: str
     title: str
     created_at_i: int
-    story_text: Optional[str]
-    url: Optional[str]
+    story_text: str
+    url: str
     num_comments: int
 
 
 class HNEntry(TypedDict):
-    author: Optional[str]
+    author: str
     # FIXME: Recursive declarations are not yet supported in TypedDicts
-    children: list[Any]
+    children: Any
     created_at_i: int
     id: int
-    parent_id: Optional[int]
-    text: Optional[str]
-    title: Optional[str]
-    url: Optional[str]
+    parent_id: int
+    text: str
+    title: str
+    url: str
 
 
 class LBThread(TypedDict):
@@ -337,7 +339,7 @@ class LBThread(TypedDict):
     description: str
     submitter_user: str
     comment_count: int
-    comments: Optional[list[Any]]
+    comments: list
 
 
 class LBComment(TypedDict):
@@ -345,7 +347,7 @@ class LBComment(TypedDict):
     created_at: str
     url: str
     commenting_user: str
-    parent_comment: Optional[str]
+    parent_comment: str
 
 
 HTML_BLOCK_TAGS = set(("root", "p", "pre", "blockquote", "ul", "ol", "li", "hr"))
@@ -358,15 +360,15 @@ HTML_AUTOCLOSE_TAGS = set(("hr", "br"))
 class HTMLNode:
     tag: str
 
-    parent: Optional["HTMLNode"] = None
+    parent = None
 
-    prev_sibling: Optional["HTMLNode"] = None
-    next_sibling: Optional["HTMLNode"] = None
+    prev_sibling = None
+    next_sibling = None
 
-    first_child: Optional["HTMLNode"] = None
-    last_child: Optional["HTMLNode"] = None
+    first_child = None
+    last_child = None
 
-    attrs: dict[str, Optional[str]] = dataclasses.field(default_factory=dict)
+    attrs: dict = dataclasses.field(default_factory=dict)
     text: str = ""
     pre: bool = False
 
@@ -388,7 +390,7 @@ class HTMLParser(html.parser.HTMLParser):
         node = HTMLNode(tag="text", text=data, pre=self.pre_level > 0)
         html_node_append(self.current_node, node)
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+    def handle_starttag(self, tag: str, attrs: list) -> None:
         if self.current_node.tag in HTML_AUTOCLOSE_TAGS:
             self.handle_endtag(self.current_node.tag)
 
@@ -464,7 +466,7 @@ def text_unindent(text: str) -> str:
     return "\n".join(lines)
 
 
-def text_sanitize(text: Optional[str]) -> str:
+def text_sanitize(text: str) -> str:
     # For safety, remove any control characters except for \n and \t
     # At least on HN some messages contain \x00 characters
 
@@ -476,12 +478,12 @@ def text_sanitize(text: Optional[str]) -> str:
     return text
 
 
-def text_split_urls(text: str) -> list[str]:
+def text_split_urls(text: str) -> list:
     return [p for p in URL_REX.split(text) if p != ""]
 
 
-def html_node_children(parent: HTMLNode) -> list[HTMLNode]:
-    ret: list[HTMLNode] = []
+def html_node_children(parent: HTMLNode) -> list:
+    ret = []
     node = parent.first_child
 
     while node is not None:
@@ -684,18 +686,18 @@ def fetch(url: str) -> str:
 
 
 @overload
-def list_get(lst: list[T], index: int, default: T) -> T: ...
+def list_get(lst: list, index: int, default: T) -> T: ...
 
 
 @overload
-def list_get(lst: list[T], index: int, default: Optional[T] = None) -> Optional[T]: ...
+def list_get(lst: list, index: int, default: T = None) -> T: ...
 
 
 def list_get(lst, index, default=None):
     return lst[index] if 0 <= index < len(lst) else default
 
 
-def list_chunk(lst: list[T], size: int) -> list[list[T]]:
+def list_chunk(lst: list, size: int) -> list:
     # Flake8 conflicts with Black here - https://github.com/PyCQA/pycodestyle/issues/373
     return [lst[i : i + size] for i in range(0, len(lst), size)]  # noqa: E203
 
@@ -858,7 +860,7 @@ def cmd_load_page(app: AppState) -> None:
     elif len(user_input) > 0:
         app_show_flash(app, "Invalid page number")
 
-def make_group(name: str, f: Callable[[int], Group]):
+def make_group(name: str, f: Callable):
     return Group(label=name, fetch=lambda db, page: f(page))
 
 def cmd_lb_see_tags(app: AppState) -> None:
@@ -976,7 +978,7 @@ def db_save_message(db: DB, message: Message) -> None:
     db.commit()
 
 
-def db_load_message_flags(db: DB, messages_by_id: dict[str, Message]) -> None:
+def db_load_message_flags(db: DB, messages_by_id: dict) -> None:
     message_ids = list(messages_by_id.keys())
     sql = f"SELECT * FROM messages WHERE msg_id IN ({','.join('?' for _ in message_ids)})"
 
@@ -985,7 +987,7 @@ def db_load_message_flags(db: DB, messages_by_id: dict[str, Message]) -> None:
         messages_by_id[row["msg_id"]].flags = MessageFlags(**flags)
 
 
-def db_load_read_comments(db: DB, messages_by_id: dict[str, Message]) -> None:
+def db_load_read_comments(db: DB, messages_by_id: dict) -> None:
     threads_by_id = {msg.msg_id: msg for msg in messages_by_id.values() if msg.is_thread}
     thread_ids = list(threads_by_id.keys())
 
@@ -1000,7 +1002,7 @@ def db_load_read_comments(db: DB, messages_by_id: dict[str, Message]) -> None:
         threads_by_id[row["thread_id"]].read_comments = row["count"]
 
 
-def db_load_starred_thread_ids(db: DB, page: int = 1) -> list[str]:
+def db_load_starred_thread_ids(db: DB, page: int = 1) -> list:
     page_size = 30
     offset = (page - 1) * page_size
     sql = """
@@ -1048,7 +1050,7 @@ def msg_flatten_thread(
             yield child
 
 
-def msg_build_raw_lines(msg: Message) -> list[str]:
+def msg_build_raw_lines(msg: Message) -> list:
     text = text_sanitize(msg.body)
 
     # Unescape selected entities for better readability
@@ -1059,7 +1061,7 @@ def msg_build_raw_lines(msg: Message) -> list[str]:
     return reduce(lambda acc, line: acc + wrap(line, width=120, replace_whitespace=False), text.split("\n"), [])
 
 
-def msg_build_lines(msg: Message) -> list[str]:
+def msg_build_lines(msg: Message) -> list:
     lines = [
         f"Content-Location: {msg.content_location}",
         f"Date: {msg.date.strftime('%Y-%m-%d %H:%M')}",
@@ -1091,7 +1093,7 @@ def hn_parse_search_hit(hit: HNSearchHit) -> Message:
     )
 
 
-def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Optional[Message] = None) -> Message:
+def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Message = None) -> Message:
     thread_id = thread_id or str(entry["id"])
 
     my_title = html.unescape(entry["title"]) if entry["title"] else None
@@ -1118,7 +1120,7 @@ def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Optional[Message
     return msg
 
 
-def hn_fetch_threads_by_id(thread_ids: list[str]) -> list[Message]:
+def hn_fetch_threads_by_id(thread_ids: list) -> list:
     story_tags = ",".join(f"story_{x}" for x in thread_ids)
     url = f"https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={len(thread_ids)}&tags=story,({story_tags})"
     hits = json.loads(fetch(url))["hits"]
@@ -1127,13 +1129,13 @@ def hn_fetch_threads_by_id(thread_ids: list[str]) -> list[Message]:
 
     return threads
 
-def hn_fetch_user_threads(username: str, page: int = 1) -> list[Message]:
+def hn_fetch_user_threads(username: str, page: int = 1) -> list:
     url = f"https://hn.algolia.com/api/v1/search?hitsPerPage={PREFERRED_PAGE_SIZE}&page={page-1}&tags=story,author_{username}"
     print(url)
     hits = json.loads(fetch(url))["hits"]
     return [hn_parse_search_hit(hit) for hit in hits]
     
-def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
+def hn_fetch_threads(group: str = "news", page: int = 1) -> list:
     rex = re.compile(r'href="item\?id=(\d+)"')
 
     url = f"https://news.ycombinator.com/{group}"
@@ -1147,7 +1149,7 @@ def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
     return hn_fetch_threads_by_id(thread_ids)
 
 
-def hn_fetch_new_threads(page: int = 1) -> list[Message]:
+def hn_fetch_new_threads(page: int = 1) -> list:
     url = f"https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&page={page-1}"
     hits = json.loads(fetch(url))["hits"]
 
@@ -1200,10 +1202,10 @@ def lb_parse_thread(thread: LBThread) -> Message:
     return ret
 
 
-def lb_fetch_threads(group: str = "", page: int = 1) -> list[Message]:
+def lb_fetch_threads(group: str = "", page: int = 1) -> list:
     group_path = f"{group}/" if group else ""
     resp = fetch(f"https://lobste.rs/{group_path}page/{page}.json")
-    threads: list[LBThread] = json.loads(resp)
+    threads: list = json.loads(resp)
 
     return [lb_parse_thread(thread) for thread in threads]
 
@@ -1223,9 +1225,9 @@ def group_advance_page(group: Group, offset: int = 1) -> Group:
     return group_set_page(group, page=max(1, group.page + offset))
 
 
-def group_fetch_starred_threads(db: DB, page: int = 1) -> list[Message]:
+def group_fetch_starred_threads(db: DB, page: int = 1) -> list:
     thread_ids = db_load_starred_thread_ids(db, page)
-    threads_by_provider_id: dict[str, list[str]] = {}
+    threads_by_provider_id: dict = {}
     threads = []
 
     for source_id, provider_id in (t.split("@") for t in thread_ids):
@@ -1259,7 +1261,7 @@ def group_for_msg_url(url: str) -> Group:
     raise ExitException(1, msg)
 
 
-def app_safe_run(app: AppState, fn: Callable[[], T], flash: Optional[str]) -> Optional[T]:
+def app_safe_run(app: AppState, fn: Callable, flash: str):
     if flash is not None:
         app_show_flash(app, flash)
 
@@ -1285,7 +1287,7 @@ def app_refresh_message(app: AppState) -> None:
         msg.lines = msg_build_raw_lines(msg) if app.raw_mode else msg_build_lines(msg)
 
 
-def app_select_message(app: AppState, message: Optional[Message], show_pager: bool = False) -> None:
+def app_select_message(app: AppState, message: Message, show_pager: bool = False) -> None:
     app.selected_message = message
 
     app_refresh_message(app)
@@ -1304,7 +1306,7 @@ def app_select_message(app: AppState, message: Optional[Message], show_pager: bo
 
 
 def app_load_messages(
-    app: AppState, messages: list[Message], selected_message_id: Optional[str] = None, show_pager: bool = False
+    app: AppState, messages: list, selected_message_id: str = None, show_pager: bool = False
 ) -> None:
     if selected_message_id is None and app.selected_message is not None:
         selected_message_id = app.selected_message.msg_id
@@ -1432,7 +1434,7 @@ def app_show_links_screen(app: AppState) -> None:
     app.screen.clearok(True)
 
 
-def app_show_flash(app: AppState, flash: Optional[str]) -> None:
+def app_show_flash(app: AppState, flash: str) -> None:
     app.flash = flash
     app_render(app)
 
@@ -1650,7 +1652,7 @@ def app_main(screen: Window, db: DB, group: Group, ascii: bool, monochrome: bool
         KEY_BINDINGS.get(c, cmd_unknown)(app)
 
 
-def setup_logging(path: Optional[str]) -> None:
+def setup_logging(path: str) -> None:
     if path is None:
         return logging.disable()
 
