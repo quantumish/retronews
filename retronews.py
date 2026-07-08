@@ -245,6 +245,7 @@ class Message:
     date: datetime
     author: Optional[str]
     title: str
+    misc_headers: dict = None
     body: Optional[str] = None
     lines: list[str] = dataclasses.field(default_factory=list)
     parent: Optional["Message"] = None
@@ -338,7 +339,7 @@ class LBThread(TypedDict):
     submitter_user: str
     comment_count: int
     comments: Optional[list[Any]]
-
+    tags: list
 
 class LBComment(TypedDict):
     short_id: str
@@ -1065,9 +1066,14 @@ def msg_build_lines(msg: Message) -> list[str]:
         f"Date: {msg.date.strftime('%Y-%m-%d %H:%M')}",
         f"From: {msg.author or '<unknown>'}",
         f"Subject: {msg.title}",
-        "",
     ]
 
+    if msg.misc_headers is not None:
+        for name, val in msg.misc_headers.items():
+            lines.append(f"{name}: {val}")
+
+    lines.append("")
+    
     lines += html_render(msg.body or "").split("\n") if not msg.is_deleted else ["<deleted>"]
 
     return lines
@@ -1176,6 +1182,7 @@ def lb_parse_thread(thread: LBThread) -> Message:
         body=thread_body,
         children=None if thread.get("comments") is None else [],
         total_comments=thread["comment_count"] + 1,
+        misc_headers={"Cc": ", ".join(thread['tags'])}
     )
 
     for comment in thread.get("comments", []) or []:
