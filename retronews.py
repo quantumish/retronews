@@ -142,6 +142,13 @@ COLORS: dict[Color, tuple[int, int]] = {
     "url": (curses.COLOR_MAGENTA, -1),
 }
 
+UNREAD_SIZE = 3
+UNREAD_MANY_CHAR = '!'
+AUTHOR_SIZE = 10
+COLUMN_SPACING = 2
+DATECOL_SIZE = 16
+DATECOL_FUNC = lambda date: date.strftime("%Y-%m-%d %H:%M")
+
 REQUEST_TIMEOUT = 10
 
 # Recognize ">text", "> text", ">>text", ">> text", etc.
@@ -168,6 +175,14 @@ else:
     Window = Any
 
 T = TypeVar("T")
+
+def truncate_ellipsis(string: str, length: int) -> str:
+    if len(string) > length:
+        return string[:length-1] + "…"
+    else:
+        return string
+
+TRUNCATE = truncate_ellipsis
 
 class ExitException(Exception):
     code: int
@@ -846,20 +861,13 @@ def cmd_load_page(app: AppState) -> None:
 def lb_group(name: str, path: str):
     return Group(label=name, fetch=lambda db, page: lb_fetch_threads(path, page))
 
-MAX_DISPLAY_LENGTH = 25
-def truncate_visible(string: str):
-    if len(string) > MAX_DISPLAY_LENGTH:
-        return string[:MAX_DISPLAY_LENGTH] + "..."
-    else:
-        return string
-
 def cmd_lb_see_tags(app: AppState) -> None:
     user_input = app_prompt(app, "Stories for tag(s) (comma to combine): ")
-    app_load_group(app, lb_group(truncate_visible(user_input), "t/"+user_input))
+    app_load_group(app, lb_group(TRUNCATE(user_input, 25), "t/"+user_input))
 
 def cmd_lb_see_user(app: AppState) -> None:
     user_input = app_prompt(app, "Stories posted by user: ")
-    app_load_group(app, lb_group(truncate_visible(user_input), f"~{user_input}/stories"))
+    app_load_group(app, lb_group(TRUNCATE(user_input, 25), f"~{user_input}/stories"))
 
 def cmd_open(app: AppState) -> None:
     if (msg := app.selected_message) is None:
@@ -1435,22 +1443,26 @@ def app_prompt(app: AppState, prompt: str) -> str:
 
     return ret
 
+def app_chgat(app: AppState, row, start, size, color) -> int:
+    app.screen.chgat(row, start, size, color)
+    return start + size
 
 def app_render_index_row(app: AppState, row: int, message: Message) -> None:
     cols = app.layout.cols
-    date = message.date.strftime("%m-%d %H:%M")
-    author = (message.author or "<unknown>")[:10].ljust(10)
+    date = TRUNCATE(DATECOL_FUNC(message.date), DATECOL_SIZE).rjust(DATECOL_SIZE)
+    author = TRUNCATE(message.author or "<unknown>", AUTHOR_SIZE).ljust(AUTHOR_SIZE)
 
     is_response = message.title.startswith("Re:") and not message.is_thread
     is_selected = message == app.selected_message
     hide_title = is_response and row > app.layout.index_start and not message.flags.starred and not is_selected
     title = "" if hide_title else text_clean(message.title, ascii=app.ascii)
 
-    unread = (
-        str(max(min(message.total_comments - message.read_comments, 9999), 0)).rjust(4) if message.is_thread else "    "
-    )
+    unread_count = max(message.total_comments - message.read_comments, 0)
+    unread_repr = str(unread_count) if unread_count < (10**UNREAD_SIZE - 1) else (UNREAD_MANY_CHAR * UNREAD_SIZE)
+    unread = unread_repr.rjust(UNREAD_SIZE) if message.is_thread else (' ' * UNREAD_SIZE)
 
-    app.screen.insstr(row, 0, f"[{date}]  [{author}]  [{unread}]  {message.index_tree}{title}")
+    spacing = ' ' * COLUMN_SPACING
+    app.screen.insstr(row, 0, f"[{date}]{spacing}[{author}]{spacing}[{unread}]{spacing}{message.index_tree}{title}")
 
     if is_selected:
         cursor_attr = curses.A_REVERSE if app.monochrome else 0
@@ -1460,12 +1472,14 @@ def app_render_index_row(app: AppState, row: int, message: Message) -> None:
         subject_attr = app.colors["starred_subject"] if message.flags.starred else app.colors["default"]
         subject_attr = subject_attr | read_attr
 
-        app.screen.chgat(row, 1, len(date), app.colors["date"] | read_attr)
-        app.screen.chgat(row, len(date)+5, 10, app.colors["author"] | read_attr)
-        app.screen.chgat(row, len(date)+19, 4, app.colors["unread_comments"] | read_attr)
-        app.screen.chgat(row, 42, len(message.index_tree), app.colors["tree"])
-        app.screen.chgat(row, 42 + len(message.index_tree), cols - 42 - len(message.index_tree), subject_attr)
-        
+        start = 1
+        start = app_chgat(app, row, start, len(date), app.colors["date"] | read_attr)
+        start = app_chgat(app, row, start + 2 + COLUMN_SPACING, AUTHOR_SIZE, app.colors["author"] | read_attr)
+        start = app_chgat(app, row, start + 2 + COLUMN_SPACING, UNREAD_SIZE, app.colors["unread_comments"] | read_attr)
+        start = app_chgat(app, row, start + 1 + COLUMN_SPACING, len(message.index_tree), app.colors["tree"])
+        app_chgat(app, row, start, cols - start, subject_attr)
+
+
 def app_render_index(app: AppState) -> None:
     height = app.layout.index_height
 
