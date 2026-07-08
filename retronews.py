@@ -142,6 +142,7 @@ COLORS: dict[Color, tuple[int, int]] = {
     "url": (curses.COLOR_MAGENTA, -1),
 }
 
+PREFERRED_PAGE_SIZE = 30
 UNREAD_SIZE = 3
 UNREAD_MANY_CHAR = '!'
 AUTHOR_SIZE = 10
@@ -199,7 +200,6 @@ class ExitException(Exception):
 class Provider:
     fetch_thread: Callable[[str], "Message"]
     fetch_threads_by_id: Callable[[list[str]], list["Message"]]
-
 
 PROVIDERS: dict[str, Provider] = {
     "hn": Provider(
@@ -858,16 +858,23 @@ def cmd_load_page(app: AppState) -> None:
     elif len(user_input) > 0:
         app_show_flash(app, "Invalid page number")
 
-def lb_group(name: str, path: str):
-    return Group(label=name, fetch=lambda db, page: lb_fetch_threads(path, page))
+def make_group(name: str, f: Callable[[int], Group]):
+    return Group(label=name, fetch=lambda db, page: f(page))
 
 def cmd_lb_see_tags(app: AppState) -> None:
     user_input = app_prompt(app, "Stories for tag(s) (comma to combine): ")
-    app_load_group(app, lb_group(TRUNCATE(user_input, 25), "t/"+user_input))
+    app_load_group(app, make_group(TRUNCATE(user_input, 25),
+                                   lambda page: lb_fetch_threads("t/"+user_input, page)))
 
 def cmd_lb_see_user(app: AppState) -> None:
     user_input = app_prompt(app, "Stories posted by user: ")
-    app_load_group(app, lb_group(TRUNCATE(user_input, 25), f"~{user_input}/stories"))
+    app_load_group(app, make_group(TRUNCATE(user_input, 25),
+                                   lambda page: lb_fetch_threads(f"~{user_input}/stories", page)))
+
+def cmd_hn_see_user(app: AppState) -> None:
+    user_input = app_prompt(app, "Stories posted by user: ")
+    app_load_group(app, make_group(TRUNCATE(user_input, 25),
+                                   lambda page: hn_fetch_user_threads(user_input, page)))
 
 def cmd_open(app: AppState) -> None:
     if (msg := app.selected_message) is None:
@@ -1120,7 +1127,11 @@ def hn_fetch_threads_by_id(thread_ids: list[str]) -> list[Message]:
 
     return threads
 
-
+def hn_fetch_user_threads(username: str, page: int = 1) -> list[Message]:
+    url = f"https://hn.algolia.com/api/v1/search?hitsPerPage={PREFERRED_PAGE_SIZE}&page={page}&tags=story,author_{username}"
+    hits = json.loads(fetch(url))["hits"]
+    return [hn_parse_search_hit(hit) for hit in hits]
+    
 def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
     rex = re.compile(r'href="item\?id=(\d+)"')
 
