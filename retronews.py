@@ -1128,7 +1128,8 @@ def hn_fetch_threads_by_id(thread_ids: list[str]) -> list[Message]:
     return threads
 
 def hn_fetch_user_threads(username: str, page: int = 1) -> list[Message]:
-    url = f"https://hn.algolia.com/api/v1/search?hitsPerPage={PREFERRED_PAGE_SIZE}&page={page}&tags=story,author_{username}"
+    url = f"https://hn.algolia.com/api/v1/search?hitsPerPage={PREFERRED_PAGE_SIZE}&page={page-1}&tags=story,author_{username}"
+    print(url)
     hits = json.loads(fetch(url))["hits"]
     return [hn_parse_search_hit(hit) for hit in hits]
     
@@ -1147,7 +1148,7 @@ def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
 
 
 def hn_fetch_new_threads(page: int = 1) -> list[Message]:
-    url = f"https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&page={page}"
+    url = f"https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&page={page-1}"
     hits = json.loads(fetch(url))["hits"]
 
     return [hn_parse_search_hit(hit) for hit in hits]
