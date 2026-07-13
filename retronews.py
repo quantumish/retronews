@@ -6,7 +6,6 @@
 # it under the terms of the GNU General Public License version 2 as published by
 # the Free Software Foundation.
 #
-from __future__ import annotations
 
 import sys
 
@@ -17,7 +16,6 @@ import sys
 import argparse
 import curses
 import curses.textpad
-import dataclasses
 import html.parser
 import json
 import logging
@@ -28,28 +26,15 @@ import traceback
 import unicodedata
 import urllib.request
 import webbrowser
+import time
 from collections import defaultdict
 from datetime import datetime
 from functools import partial, reduce
 from textwrap import wrap
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Generator,
-    Literal,
-    NewType,
-    Optional,
-    TypedDict,
-    TypeVar,
-    Union,
-    cast,
-    overload,
-)
 
-USER_AGENT: str = "retronews"
+USER_AGENT = "retronews"
 
-KEY_BINDINGS: dict = {
+KEY_BINDINGS = {
     ord("q"): lambda app: cmd_quit(app),
     ord("?"): lambda app: cmd_help(app),
     ord("\n"): lambda app: cmd_open(app),
@@ -106,26 +91,7 @@ HELP_SCREEN = """\
 
 See https://github.com/luke8086/retronews for more information."""
 
-Color = Literal[
-    "author",
-    "code",
-    "cursor",
-    "date",
-    "default",
-    "empty_pager_line",
-    "deleted_message_pager_line",
-    "menu",
-    "menu_active",
-    "nested_quote",
-    "quote",
-    "starred_subject",
-    "header_subject",
-    "tree",
-    "unread_comments",
-    "url",
-]
-
-COLORS: dict = {
+COLORS = {
     "author": (curses.COLOR_YELLOW, -1),
     "code": (curses.COLOR_GREEN, -1),
     "cursor": (curses.COLOR_BLACK, curses.COLOR_CYAN),
@@ -167,43 +133,22 @@ URL_REX = re.compile(r"(https?://[^\s\)\"<,]+[^\s\)\"<,\.])")
 HN_URL_REX = re.compile(r"^https://news\.ycombinator\.com/item\?id=(\d+)$")
 LB_URL_REX = re.compile(r"^https://lobste\.rs/s/([a-z0-9]{6}).*$")
 
-# FIXME: Use TypeAlias after migrating to Python 3.10
-DB = NewType("DB", "sqlite3.Connection")
-
-if TYPE_CHECKING:
-    from _curses import _CursesWindow
-
-    Window = _CursesWindow
-else:
-    Window = Any
-
-T = TypeVar("T")
-
-def truncate_ellipsis(string: str, length: int) -> str:
-    if len(string) > length:
-        return string[:length-1] + "…"
-    else:
-        return string
-
-TRUNCATE = truncate_ellipsis
+TRUNCATE = lambda s,l: s[:l]
 
 class ExitException(Exception):
-    code: int
-    message: str
-
-    def __init__(self, code: int = 0, message: str = ""):
+    def __init__(self, code = 0, message = ""):
         self.code = code
         self.message = message
 
         super().__init__(message)
 
 
-@dataclasses.dataclass(frozen=True)
 class Provider:
-    fetch_thread: Callable
-    fetch_threads_by_id: Callable
+    def __init__(self, fetch_thread, fetch_threads_by_id):
+        self.fetch_thread = fetch_thread
+        self.fetch_threads_by_id = fetch_threads_by_id
 
-PROVIDERS: dict = {
+PROVIDERS = {
     "hn": Provider(
         fetch_thread=lambda msg_id: hn_fetch_thread(msg_id),
         fetch_threads_by_id=lambda msg_ids: hn_fetch_threads_by_id(msg_ids),
@@ -215,14 +160,14 @@ PROVIDERS: dict = {
 }
 
 
-@dataclasses.dataclass(frozen=True)
 class Group:
-    label: str
-    fetch: Callable
-    page: int = 1
+    def __init__(self, label, fetch, page=0):
+        self.label = label
+        self.fetch = fetch
+        self.page = page
 
 
-GROUP_TABS: list = [
+GROUP_TABS = [
     Group(label="Front HN", fetch=lambda db, page: hn_fetch_threads("news", page)),
     Group(label="New HN", fetch=lambda db, page: hn_fetch_new_threads(page)),
     Group(label="Ask HN", fetch=lambda db, page: hn_fetch_threads("ask", page)),
@@ -233,164 +178,112 @@ GROUP_TABS: list = [
 ]
 
 
-@dataclasses.dataclass
 class MessageFlags:
-    read: bool = False
-    starred: bool = False
+    def __init__(self, read = False, starred=False): 
+        self.read = False
+        self.starred = False
 
 
-@dataclasses.dataclass
 class Message:
-    msg_id: str
-    thread_id: str
-    content_location: str
-    date: datetime
-    author: str
-    title: str
-    body: str = None
-    lines: str = dataclasses.field(default_factory=list)
-    parent: Message = None
-    children: list = None
-    flags: MessageFlags = dataclasses.field(default_factory=MessageFlags)
-    read_comments: int = 0
-    total_comments: int = 0
-    index_position: int = 0
-    index_tree: str = ""
+    def __init__(self, msg_id, thread_id, content_location, date, author, title,
+                 body=None, children=None, total_comments=0, parent=None):
+        self.msg_id = msg_id
+        self.thread_id = thread_id
+        self.content_location = content_location
+        self.date = date
+        self.author = author
+        self.title = title
+        self.body = body
+        self.children = children
+        self.total_comments = total_comments
+        self.parent = parent
+        self.lines = []
+        self.flags = MessageFlags()
+        self.read_comments = 0
+        self.index_position = 0
+        self.index_tree = ""
 
     @property
-    def is_read(self) -> bool:
+    def is_read(self):
         return self.flags.read
 
     @property
-    def is_shown_as_read(self) -> bool:
+    def is_shown_as_read(self):
         # If the message is an unloaded thread, check if all comments are read
         return self.read_comments >= self.total_comments if self.is_thread and self.children is None else self.is_read
 
     @property
-    def is_thread(self) -> bool:
+    def is_thread(self):
         return self.msg_id == self.thread_id
 
     @property
-    def is_deleted(self) -> bool:
+    def is_deleted(self):
         return self.author is None
 
 
-@dataclasses.dataclass
 class Layout:
-    lines: int = 0
-    cols: int = 0
-    top_menu_row: int = 0
-    index_start: int = 1
-    index_height: int = 0
-    middle_menu_row: int = None
-    pager_start: int = None
-    pager_height: int = None
-    bottom_menu_row: int = 0
-    flash_menu_row: int = 0
+    def __init__(self):
+        self.lines = 0
+        self.cols = 0
+        self.top_menu_row = 0
+        self.index_start = 1
+        self.index_height = 0
+        self.middle_menu_row = None
+        self.pager_start = None
+        self.pager_height = None
+        self.bottom_menu_row = 0
+        self.flash_menu_row = 0
 
 
-@dataclasses.dataclass
 class AppState:
-    screen: Window
-    db: DB
-    group: Group
-    ascii: bool = False
-    monochrome: bool = False
-    colors: dict = dataclasses.field(default_factory=dict)
-    messages: list = dataclasses.field(default_factory=list)
-    messages_by_id: dict = dataclasses.field(default_factory=dict)
-    selected_message: Message = None
-    marked_message_id: str = None
-    layout: Layout = dataclasses.field(default_factory=Layout)
-    pager_visible: bool = False
-    pager_offset: int = 0
-    raw_mode: bool = False
-    flash: str = None
-
-
-class HNSearchHit(TypedDict):
-    objectID: int
-    author: str
-    title: str
-    created_at_i: int
-    story_text: str
-    url: str
-    num_comments: int
-
-
-class HNEntry(TypedDict):
-    author: str
-    # FIXME: Recursive declarations are not yet supported in TypedDicts
-    children: Any
-    created_at_i: int
-    id: int
-    parent_id: int
-    text: str
-    title: str
-    url: str
-
-
-class LBThread(TypedDict):
-    short_id: str
-    short_id_url: str
-    created_at: str
-    title: str
-    url: str
-    description: str
-    submitter_user: str
-    comment_count: int
-    comments: list
-
-
-class LBComment(TypedDict):
-    short_id: str
-    created_at: str
-    url: str
-    commenting_user: str
-    parent_comment: str
-
+    def __init__(self, screen, db, group, ascii=False, monochrome=False):
+        self.screen = screen
+        self.db = db
+        self.group = group
+        self.ascii = ascii
+        self.monochrome = monochrome
+        self.colors = {}
+        self.messages = []
+        self.messages_by_id = {}
+        self.selected_message = None
+        self.marked_message_id = ""
+        self.layout = Layout()
+        self.pager_visible = False
+        self.pager_offset = 0
+        self.raw_mode = False
+        self.flash = None
 
 HTML_BLOCK_TAGS = set(("root", "p", "pre", "blockquote", "ul", "ol", "li", "hr"))
 HTML_INLINE_TAGS = set(("code", "a", "em", "strong", "b", "br"))
 HTML_KNOWN_TAGS = HTML_BLOCK_TAGS.union(HTML_INLINE_TAGS)
 HTML_AUTOCLOSE_TAGS = set(("hr", "br"))
 
-
-@dataclasses.dataclass
 class HTMLNode:
-    tag: str
-
-    parent = None
-
-    prev_sibling = None
-    next_sibling = None
-
-    first_child = None
-    last_child = None
-
-    attrs: dict = dataclasses.field(default_factory=dict)
-    text: str = ""
-    pre: bool = False
-
+    def __init__(self, tag, attrs=None, text="", pre=False):
+        self.tag = tag
+        self.text = text
+        self.pre = pre
+        self.attrs = {} if attrs is None else attrs
+        self.parent = None
+        self.prev_sibling = None
+        self.next_sibling = None
+        self.first_child = None
+        self.last_child = None
 
 class HTMLParser(html.parser.HTMLParser):
-    root_node: HTMLNode
-    current_node: HTMLNode
-    pre_level = 0
-
     def __init__(self):
         super().__init__()
-
+        self.pre_level = 0
         self.root_node = self.current_node = HTMLNode(tag="root")
 
-    def handle_data(self, data: str) -> None:
+    def handle_data(self, data):
         if self.current_node.tag in HTML_AUTOCLOSE_TAGS:
             self.handle_endtag(self.current_node.tag)
 
         node = HTMLNode(tag="text", text=data, pre=self.pre_level > 0)
         html_node_append(self.current_node, node)
 
-    def handle_starttag(self, tag: str, attrs: list) -> None:
+    def handle_starttag(self, tag, attrs):
         if self.current_node.tag in HTML_AUTOCLOSE_TAGS:
             self.handle_endtag(self.current_node.tag)
 
@@ -404,7 +297,7 @@ class HTMLParser(html.parser.HTMLParser):
         html_node_append(self.current_node, node)
         self.current_node = node
 
-    def handle_endtag(self, tag: str) -> None:
+    def handle_endtag(self, tag):
         if tag not in HTML_KNOWN_TAGS:
             return
 
@@ -423,7 +316,7 @@ class HTMLParser(html.parser.HTMLParser):
                 break
 
 
-def text_wrap(text: str, width=70) -> str:
+def text_wrap(text, width=70):
     if len(text) == 0:
         # Preserve empty lines
         return ""
@@ -438,7 +331,8 @@ def text_wrap(text: str, width=70) -> str:
 
     indent = ""
 
-    if (match := QUOTE_REX.match(text)) is not None:
+    match = QUOTE_REX.match(text)
+    if match is not None:
         # Preserve quotation symbols in subsequent lines
         indent = match[0]
 
@@ -448,7 +342,7 @@ def text_wrap(text: str, width=70) -> str:
     return "\n".join(lines)
 
 
-def text_clean(text: str, ascii: bool = False) -> str:
+def text_clean(text, ascii = False):
     """Cleanup text for rendering, currently only removes non-ascii characters in ascii mode"""
 
     if ascii:
@@ -457,7 +351,7 @@ def text_clean(text: str, ascii: bool = False) -> str:
     return text
 
 
-def text_unindent(text: str) -> str:
+def text_unindent(text):
     lines = text.split("\n")
 
     while all(line.startswith(" ") or line == "" for line in lines):
@@ -466,7 +360,7 @@ def text_unindent(text: str) -> str:
     return "\n".join(lines)
 
 
-def text_sanitize(text: str) -> str:
+def text_sanitize(text):
     # For safety, remove any control characters except for \n and \t
     # At least on HN some messages contain \x00 characters
 
@@ -478,11 +372,11 @@ def text_sanitize(text: str) -> str:
     return text
 
 
-def text_split_urls(text: str) -> list:
+def text_split_urls(text):
     return [p for p in URL_REX.split(text) if p != ""]
 
 
-def html_node_children(parent: HTMLNode) -> list:
+def html_node_children(parent):
     ret = []
     node = parent.first_child
 
@@ -493,7 +387,7 @@ def html_node_children(parent: HTMLNode) -> list:
     return ret
 
 
-def html_node_append(parent: HTMLNode, child: HTMLNode) -> None:
+def html_node_append(parent, child):
     if parent.first_child is None:
         parent.first_child = child
 
@@ -505,7 +399,7 @@ def html_node_append(parent: HTMLNode, child: HTMLNode) -> None:
     child.parent = parent
 
 
-def html_node_unlink(node: HTMLNode) -> None:
+def html_node_unlink(node):
     if node.prev_sibling:
         node.prev_sibling.next_sibling = node.next_sibling
 
@@ -521,9 +415,9 @@ def html_node_unlink(node: HTMLNode) -> None:
     node.parent = node.prev_sibling = node.next_sibling = None
 
 
-def html_node_dump(node: HTMLNode) -> str:
+def html_node_dump(node):
     lines = []
-    lines.append(f"{node.tag} {repr(node.attrs)}")
+    lines.append("{} {}".format(node.tag, repr(node.attrs)))
 
     for child in html_node_children(node):
         if child.tag == "text":
@@ -534,7 +428,7 @@ def html_node_dump(node: HTMLNode) -> str:
     return "\n".join(lines)
 
 
-def html_node_trim_whitespace(node: HTMLNode) -> None:
+def html_node_trim_whitespace(node):
     if node.pre:
         node.text = node.text.rstrip("\r\n\t ")
         return
@@ -547,7 +441,7 @@ def html_node_trim_whitespace(node: HTMLNode) -> None:
     node.text = text
 
 
-def html_node_process_inline(node: HTMLNode, inline=False) -> str:
+def html_node_process_inline(node, inline=False):
     """Traverse tree flattening all inline nodes into text nodes"""
 
     if node.tag not in HTML_BLOCK_TAGS:
@@ -564,18 +458,18 @@ def html_node_process_inline(node: HTMLNode, inline=False) -> str:
     elif node.tag == "br":
         text = "\x00"
     elif node.tag == "em" or node.tag == "i":
-        text = f"/{text}/"
+        text = "/{}/".format(text)
     elif node.tag == "strong" or node.tag == "b":
-        text = f"*{text}*"
+        text = "*{}*".format(text)
     elif node.tag == "code" and not node.pre:
-        text = f"`{text}`"
+        text = "`{}`".format(text)
     elif node.tag == "a":
         href = node.attrs.get("href", "") or ""
         if text.endswith("...") and href.startswith(text[:-3]):
             # Workaround for link formatting on HN
             text = href
         elif text != href:
-            text = f"{text} {href}"
+            text = "{} {}".format(text, href)
 
     node.tag = "text"
     node.text = text
@@ -584,7 +478,7 @@ def html_node_process_inline(node: HTMLNode, inline=False) -> str:
     return text
 
 
-def html_node_process_text(node: HTMLNode):
+def html_node_process_text(node):
     """Traverse tree merging, trimming and pruning text nodes"""
 
     for child in html_node_children(node):
@@ -608,7 +502,7 @@ def html_node_process_text(node: HTMLNode):
             html_node_unlink(child)
 
 
-def html_node_render_block(node: HTMLNode, width=70) -> str:
+def html_node_render_block(node, width=70):
     if node.tag == "blockquote" or node.tag == "li" or node.tag == "pre":
         width -= 2
 
@@ -646,7 +540,7 @@ def html_node_render_block(node: HTMLNode, width=70) -> str:
     return text
 
 
-def html_render(html: str) -> str:
+def html_render(html):
     # This renderer works well for HN messages because their markup is simple, and it can do
     # some custom optimizations, like expanding ellipsis-shortened links, preserving quote
     # symbols in wrapped lines, and preventing references with long urls from being broken
@@ -662,85 +556,81 @@ def html_render(html: str) -> str:
     node = parser.root_node
 
     log_sep = "\n" + "-" * 80 + "\n"
-    logging.debug(f"Initial HTML tree{log_sep}{html_node_dump(node)}{log_sep}")
+    logging.debug("Initial HTML tree{}{}{}".format(log_sep, html_node_dump(node), log_sep))
 
     html_node_process_inline(node)
     html_node_process_text(node)
 
-    logging.debug(f"Processed HTML tree{log_sep}{html_node_dump(node)}{log_sep}")
+    logging.debug("Processed HTML tree{}{}{}".format(log_sep, html_node_dump(node), log_sep))
 
     return html_node_render_block(node)
 
 
-def fetch(url: str) -> str:
-    logging.debug(f"Fetching '{url}'...")
+def fetch(url):
+    logging.debug("Fetching '{}'...".format(url))
 
     headers = {}
     if USER_AGENT is not None:
         headers["User-Agent"] = USER_AGENT
-        
+
     req = urllib.request.Request(url, headers=headers)
     resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read().decode()
 
     return resp
 
 
-@overload
-def list_get(lst: list, index: int, default: T) -> T: ...
-
-
-@overload
-def list_get(lst: list, index: int, default: T = None) -> T: ...
-
-
 def list_get(lst, index, default=None):
     return lst[index] if 0 <= index < len(lst) else default
 
 
-def list_chunk(lst: list, size: int) -> list:
+def list_chunk(lst, size):
     # Flake8 conflicts with Black here - https://github.com/PyCQA/pycodestyle/issues/373
     return [lst[i : i + size] for i in range(0, len(lst), size)]  # noqa: E203
 
 
-def cmd_quit(_: AppState):
+def cmd_quit(_):
     raise ExitException()
 
 
-def cmd_help(app: AppState):
+def cmd_help(app):
     app_show_help_screen(app)
 
 
-def cmd_show_links(app: AppState):
+def cmd_show_links(app):
     app_show_links_screen(app)
 
 
-def cmd_up(app: AppState) -> None:
+def cmd_up(app):
     cmd_pager_up(app) if app.pager_visible else cmd_prev(app)
 
 
-def cmd_down(app: AppState) -> None:
+def cmd_down(app):
     cmd_pager_down(app) if app.pager_visible else cmd_next(app)
 
 
-def cmd_prev(app: AppState) -> None:
+def cmd_prev(app):
     pos = app.selected_message.index_position - 1 if app.selected_message else 0
     app_select_message(app, list_get(app.messages, pos, app.selected_message))
 
 
-def cmd_next(app: AppState) -> None:
+def cmd_next(app):
     pos = app.selected_message.index_position + 1 if app.selected_message else 0
     app_select_message(app, list_get(app.messages, pos, app.selected_message))
 
 
-def cmd_next_unread(app: AppState) -> None:
+def cmd_next_unread(app):
     pos = app.selected_message.index_position + 1 if app.selected_message else 0
     message = next((msg for msg in app.messages[pos:] if not msg.is_shown_as_read), None)
     if message is not None:
         app_select_message(app, message)
 
 
-def cmd_next_sibling(app: AppState) -> None:
-    if (msg := app.selected_message) and (parent_msg := msg.parent) and parent_msg.children:
+def cmd_next_sibling(app):
+    msg = app.selected_message
+    if msg is None:
+        return
+    parent_msg = msg.parent
+    if parent_msg and parent_msg.children:
         # find the next sibling
         try:
             idx = parent_msg.children.index(msg)
@@ -750,8 +640,12 @@ def cmd_next_sibling(app: AppState) -> None:
             pass
 
 
-def cmd_prev_sibling(app: AppState) -> None:
-    if (msg := app.selected_message) and (parent_msg := msg.parent) and parent_msg.children:
+def cmd_prev_sibling(app):
+    msg = app.selected_message
+    if msg is None:
+        return
+    parent_msg = msg.parent
+    if parent_msg and parent_msg.children:
         # find the previous sibling
         try:
             idx = parent_msg.children.index(msg)
@@ -761,34 +655,35 @@ def cmd_prev_sibling(app: AppState) -> None:
             pass
 
 
-def cmd_mark_thread_as_read(app: AppState) -> None:
+def cmd_mark_thread_as_read(app):
     # recursively mark us and all children as read
     # then jump to the next sibling
-    def iterate(message: Message):
+    def iterate(message):
         if message.children:
             for child in message.children:
                 child.flags.read = True
                 db_save_message(app.db, child)
                 iterate(child)
 
-    if (msg := app.selected_message) is not None:
+    msg = app.selected_message
+    if msg is not None:
         iterate(msg)
         # jump to the next sibling
         cmd_next_sibling(app)
 
 
-def cmd_parent(app: AppState) -> None:
-    if (msg := app.selected_message) is not None and (parent_msg := msg.parent) is not None:
-        app_select_message(app, parent_msg)
+def cmd_parent(app):
+    if app.selected_message is not None and app.selected_message.parent is not None:
+        app_select_message(app, app.selected_message.parent)
 
 
-def cmd_mark_set(app: AppState) -> None:
-    if (msg := app.selected_message) is not None:
-        app.marked_message_id = msg.msg_id
+def cmd_mark_set(app):
+    if app.selected_message is not None:
+        app.marked_message_id = app.selected_message.msg_id
     app_show_flash(app, "Mark set")
 
 
-def cmd_mark_jump(app: AppState) -> None:
+def cmd_mark_jump(app):
     marked_msg = app.messages_by_id.get(app.marked_message_id) if app.marked_message_id else None
     cmd_mark_set(app)
     if marked_msg is not None:
@@ -796,117 +691,123 @@ def cmd_mark_jump(app: AppState) -> None:
     app_show_flash(app, "Mark swapped")
 
 
-def cmd_pager_up(app: AppState) -> None:
+def cmd_pager_up(app):
     app.pager_offset = max(0, app.pager_offset - 1)
 
 
-def cmd_pager_down(app: AppState) -> None:
+def cmd_pager_down(app):
     if app.selected_message is not None and app.layout.pager_height is not None:
         app.pager_offset = min(app.pager_offset + 1, max(0, len(app.selected_message.lines) - app.layout.pager_height))
 
 
-def cmd_page_up(app: AppState) -> None:
+def cmd_page_up(app):
     cmd_pager_page_up(app) if app.pager_visible else cmd_index_page_up(app)
 
 
-def cmd_page_down(app: AppState) -> None:
+def cmd_page_down(app):
     cmd_pager_page_down(app) if app.pager_visible else cmd_index_page_down(app)
 
 
-def cmd_index_page_up(app: AppState) -> None:
+def cmd_index_page_up(app):
     pos = app.selected_message.index_position - app.layout.index_height if app.selected_message else 0
     pos = max(pos, 0)
     app_select_message(app, list_get(app.messages, pos, app.selected_message))
 
 
-def cmd_index_page_down(app: AppState) -> None:
+def cmd_index_page_down(app):
     pos = app.selected_message.index_position + app.layout.index_height if app.selected_message else 0
     pos = min(pos, len(app.messages) - 1)
     app_select_message(app, list_get(app.messages, pos, app.selected_message))
 
 
-def cmd_pager_page_up(app: AppState) -> None:
+def cmd_pager_page_up(app):
     if app.layout.pager_height is not None:
         app.pager_offset = max(0, app.pager_offset - app.layout.pager_height)
 
 
-def cmd_pager_page_down(app: AppState) -> None:
-    if (message := app.selected_message) is not None and (pager_height := app.layout.pager_height) is not None:
+def cmd_pager_page_down(app):
+    message = app.selected_message
+    pager_height = app.layout.pager_height
+    if message is not None and pager_height is not None:
         app.pager_offset = min(app.pager_offset + pager_height, max(0, len(message.lines) - pager_height))
 
 
-def cmd_load_tab(app: AppState, tab: int) -> None:
-    if group := list_get(GROUP_TABS, tab - 1):
+def cmd_load_tab(app, tab):
+    group = list_get(GROUP_TABS, tab - 1)
+    if group:
         app_load_group(app, group)
 
 
-def cmd_reload_page(app: AppState) -> None:
+def cmd_reload_page(app):
     app_load_group(app, app.group)
 
 
-def cmd_load_prev_page(app: AppState) -> None:
+def cmd_load_prev_page(app):
     app_load_group(app, group_advance_page(app.group, -1))
 
 
-def cmd_load_next_page(app: AppState) -> None:
+def cmd_load_next_page(app):
     app_load_group(app, group_advance_page(app.group, 1))
 
 
-def cmd_load_page(app: AppState) -> None:
+def cmd_load_page(app):
     user_input = app_prompt(app, "Go to page (empty to cancel): ")
 
-    if user_input.isnumeric() and (page := int(user_input)) >= 1:
-        app_load_group(app, group_set_page(app.group, page))
-    elif len(user_input) > 0:
+    if not user_input.isnumeric() or int(user_input) < 1:
         app_show_flash(app, "Invalid page number")
+    else:
+        app_load_group(app, group_set_page(app.group, int(user_input)))
 
-def make_group(name: str, f: Callable):
+def make_group(name, f):
     return Group(label=name, fetch=lambda db, page: f(page))
 
-def cmd_lb_see_tags(app: AppState) -> None:
+def cmd_lb_see_tags(app):
     user_input = app_prompt(app, "Stories for tag(s) (comma to combine): ")
     app_load_group(app, make_group(TRUNCATE(user_input, 25),
                                    lambda page: lb_fetch_threads("t/"+user_input, page)))
 
-def cmd_lb_see_user(app: AppState) -> None:
+def cmd_lb_see_user(app):
     user_input = app_prompt(app, "Stories posted by user: ")
     app_load_group(app, make_group(TRUNCATE(user_input, 25),
-                                   lambda page: lb_fetch_threads(f"~{user_input}/stories", page)))
+                                   lambda page: lb_fetch_threads("~{}/stories".format(user_input), page)))
 
-def cmd_hn_see_user(app: AppState) -> None:
+def cmd_hn_see_user(app):
     user_input = app_prompt(app, "Stories posted by user: ")
     app_load_group(app, make_group(TRUNCATE(user_input, 25),
                                    lambda page: hn_fetch_user_threads(user_input, page)))
 
-def cmd_open(app: AppState) -> None:
-    if (msg := app.selected_message) is None:
+def cmd_open(app):
+    if app.selected_message is None:
         return
 
-    if msg.is_thread:
-        app_open_thread(app, msg)
+    if app.selected_message.is_thread:
+        app_open_thread(app, app.selected_message)
     else:
-        app_select_message(app, msg, show_pager=True)
+        app_select_message(app, app.selected_message, show_pager=True)
 
 
-def cmd_close(app: AppState) -> None:
+def cmd_close(app):
     if app.pager_visible:
         app.pager_visible = False
     else:
         app_close_thread(app)
 
 
-def cmd_star(app: AppState) -> None:
-    if (msg := app.selected_message) is not None:
+def cmd_star(app):
+    msg = app.selected_message
+    if msg is not None:
         msg.flags.starred = not msg.flags.starred
         db_save_message(app.db, msg)
         cmd_next(app)
 
 
-def cmd_star_thread(app: AppState) -> None:
-    if (msg := app.selected_message) is None:
+def cmd_star_thread(app):
+    msg = app.selected_message
+    if msg is None:
         return
 
-    if (thread_msg := app.messages_by_id.get(msg.thread_id)) is None:
+    thread_msg = app.messages_by_id.get(msg.thread_id)
+    if thread_msg is None:
         return
 
     thread_msg.flags.starred = not thread_msg.flags.starred
@@ -914,52 +815,50 @@ def cmd_star_thread(app: AppState) -> None:
     cmd_next(app)
 
 
-def cmd_set_unread(app: AppState) -> None:
-    if (msg := app.selected_message) is not None:
-        msg.flags.read = False
-        db_save_message(app.db, msg)
+def cmd_set_unread(app):
+    if app.selected_message is not None:
+        app.selected_message.flags.read = False
+        db_save_message(app.db, app.selected_message)
         cmd_next(app)
 
 
-def cmd_dump(app: AppState) -> None:
-    if (msg := app.selected_message) is None:
+def cmd_dump(app):
+    if app.selected_message is None:
         return
 
-    filename = f"{msg.msg_id}.html"
+    filename = "{}.html".format(app.selected_message.msg_id)
 
     with open(filename, "w") as fp:
-        fp.write(msg.body or "")
+        fp.write(app.selected_message.body or "")
 
-    app_show_flash(app, f"Message body dumped to {filename}")
+    app_show_flash(app, "Message body dumped to {}".format(filename))
 
 
-def cmd_toggle_raw_mode(app: AppState) -> None:
+def cmd_toggle_raw_mode(app):
     app.raw_mode = not app.raw_mode
     app_select_message(app, app.selected_message)
 
 
-def cmd_resize(app: AppState) -> None:
+def cmd_resize(app):
     app_refresh_message(app)
 
 
-def cmd_unknown(app: AppState) -> None:
+def cmd_unknown(app):
     app.flash = "Unknown key"
 
 
-def db_init(path: str) -> DB:
+def db_init(path):
     path = os.path.expanduser(path)
     create_table_sql = """
         CREATE TABLE IF NOT EXISTS messages (
             msg_id TEXT NOT NULL PRIMARY KEY,
             thread_id TEXT NOT NULL,
             date INTEGER NOT NULL,
-            flags JSON NOT NULL
+            starred BOOLEAN NOT NULL,
+            read BOOLEAN NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS messages_starred_date ON messages (
-            JSON_EXTRACT(flags, '$.starred'),
-            date
-        );
+        CREATE INDEX IF NOT EXISTS messages_starred_date ON messages (starred, date);
     """
 
     db = sqlite3.connect(path)
@@ -967,48 +866,49 @@ def db_init(path: str) -> DB:
     db.executescript(create_table_sql)
     db.commit()
 
-    return cast(DB, db)
+    return db
 
 
-def db_save_message(db: DB, message: Message) -> None:
-    sql = """INSERT OR REPLACE INTO messages (msg_id, thread_id, date, flags) VALUES (?, ?, ?, ?)"""
-    date = int(message.date.timestamp())
-    flags_json = json.dumps(dataclasses.asdict(message.flags))
-    db.execute(sql, (message.msg_id, message.thread_id, date, flags_json))
+def db_save_message(db, message):
+    sql = """INSERT OR REPLACE INTO messages (msg_id, thread_id, date, starred, read) VALUES (?, ?, ?, ?, ?)"""
+    date = int(time.mktime(message.date.timetuple()))
+    db.execute(sql, (message.msg_id, message.thread_id, date, message.flags.starred, message.flags.read))
     db.commit()
 
 
-def db_load_message_flags(db: DB, messages_by_id: dict) -> None:
+def db_load_message_flags(db, messages_by_id):
     message_ids = list(messages_by_id.keys())
-    sql = f"SELECT * FROM messages WHERE msg_id IN ({','.join('?' for _ in message_ids)})"
+    sql = "SELECT * FROM messages WHERE msg_id IN ({})".format(','.join('?' for _ in message_ids))
 
     for row in db.execute(sql, message_ids):
-        flags = json.loads(row["flags"])
-        messages_by_id[row["msg_id"]].flags = MessageFlags(**flags)
+        flags = MessageFlags()
+        flags.starred = row["starred"]
+        flags.read = row["read"]
+        messages_by_id[row["msg_id"]].flags = flags
 
 
-def db_load_read_comments(db: DB, messages_by_id: dict) -> None:
+def db_load_read_comments(db, messages_by_id):
     threads_by_id = {msg.msg_id: msg for msg in messages_by_id.values() if msg.is_thread}
     thread_ids = list(threads_by_id.keys())
 
-    sql = f"""
+    sql = """
         SELECT thread_id, COUNT(*) AS count
         FROM messages
-        WHERE thread_id IN ({','.join('?' for _ in thread_ids)}) AND JSON_EXTRACT(flags, '$.read')
+        WHERE thread_id IN ({}) AND read
         GROUP BY thread_id
-    """
+    """.format(','.join('?' for _ in thread_ids))
 
     for row in db.execute(sql, thread_ids):
         threads_by_id[row["thread_id"]].read_comments = row["count"]
 
 
-def db_load_starred_thread_ids(db: DB, page: int = 1) -> list:
+def db_load_starred_thread_ids(db, page = 1):
     page_size = 30
     offset = (page - 1) * page_size
     sql = """
         SELECT thread_id
         FROM messages
-        WHERE JSON_EXTRACT(flags, '$.starred')
+        WHERE starred
         GROUP BY thread_id
         ORDER BY date DESC
         LIMIT ?
@@ -1018,7 +918,7 @@ def db_load_starred_thread_ids(db: DB, page: int = 1) -> list:
     return [row["thread_id"] for row in db.execute(sql, (page_size, offset))]
 
 
-def msg_populate_total_count(msg: Message):
+def msg_populate_total_count(msg):
     children = msg.children or []
     msg.total_count = 0
     
@@ -1030,19 +930,19 @@ def msg_populate_total_count(msg: Message):
         msg.total_count += 1 + child.total_count
 
 def msg_flatten_thread(
-    msg: Message, prefix: str = "", is_last_child: bool = False, ascii: bool = False
-) -> Generator[Message, None, None]:
+    msg, prefix = "", is_last_child = False, ascii = False
+):
     blcorner = "'-" if ascii else "└─"
     ltee = "|-" if ascii else "├─"
     vline = "| " if ascii else "│ "
 
-    msg.index_tree = "" if msg.is_thread else f"{prefix}{blcorner if is_last_child else ltee}> "
+    msg.index_tree = "" if msg.is_thread else "{}{}> ".format(prefix, blcorner if is_last_child else ltee)
     yield msg
 
     children = msg.children or []
 
     child_count = len(children)
-    child_prefix = "" if msg.is_thread else f"{prefix}{'  ' if is_last_child else vline}"
+    child_prefix = "" if msg.is_thread else "{}{}".format(prefix, '  ' if is_last_child else vline)
 
     for i, child_node in enumerate(children):
         child_is_last = i == child_count - 1
@@ -1050,7 +950,7 @@ def msg_flatten_thread(
             yield child
 
 
-def msg_build_raw_lines(msg: Message) -> list:
+def msg_build_raw_lines(msg):
     text = text_sanitize(msg.body)
 
     # Unescape selected entities for better readability
@@ -1061,12 +961,12 @@ def msg_build_raw_lines(msg: Message) -> list:
     return reduce(lambda acc, line: acc + wrap(line, width=120, replace_whitespace=False), text.split("\n"), [])
 
 
-def msg_build_lines(msg: Message) -> list:
+def msg_build_lines(msg):
     lines = [
-        f"Content-Location: {msg.content_location}",
-        f"Date: {msg.date.strftime('%Y-%m-%d %H:%M')}",
-        f"From: {msg.author or '<unknown>'}",
-        f"Subject: {msg.title}",
+        "Content-Location: {}".format(msg.content_location),
+        "Date: {}".format(msg.date.strftime('%Y-%m-%d %H:%M')),
+        "From: {}".format(msg.author or '<unknown>'),
+        "Subject: {}".format(msg.title),
         "",
     ]
 
@@ -1075,39 +975,39 @@ def msg_build_lines(msg: Message) -> list:
     return lines
 
 
-def msg_unload(msg: Message) -> Message:
+def msg_unload(msg):
     msg.children = None
     msg.body = None
     return msg
 
 
-def hn_parse_search_hit(hit: HNSearchHit) -> Message:
+def hn_parse_search_hit(hit):
     return Message(
-        msg_id=f"{hit['objectID']}@hn",
-        thread_id=f"{hit['objectID']}@hn",
-        content_location=f"https://news.ycombinator.com/item?id={hit['objectID']}",
+        msg_id="{}@hn".format(hit['objectID']),
+        thread_id="{}@hn".format(hit['objectID']),
+        content_location="https://news.ycombinator.com/item?id={}".format(hit['objectID']),
         date=datetime.fromtimestamp(hit["created_at_i"]),
         author=hit["author"],
         title=html.unescape(hit["title"]),
-        total_comments=(hit["num_comments"] or 0) + 1,
+        total_comments=(hit["num_comments"] or 0) + 1
     )
 
 
-def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Message = None) -> Message:
+def hn_parse_entry(entry, thread_id = "", parent = None):
     thread_id = thread_id or str(entry["id"])
 
     my_title = html.unescape(entry["title"]) if entry["title"] else None
 
     parent_title = parent.title if parent else ""
-    parent_title = parent_title if parent_title.startswith("Re: ") else f"Re: {parent_title}"
+    parent_title = parent_title if parent_title.startswith("Re: ") else "Re: {}".format(parent_title)
 
-    body = f"<p>{entry['url']}</p>" if entry["url"] else ""
-    body = f"{body}{entry['text']}" if entry["text"] else body
+    body = "<p>{}</p>".format(entry['url']) if entry["url"] else ""
+    body = "{}{}".format(body, entry['text']) if entry["text"] else body
 
     msg = Message(
-        msg_id=f"{entry['id']}@hn",
-        thread_id=f"{thread_id}@hn",
-        content_location=f"https://news.ycombinator.com/item?id={entry['id']}",
+        msg_id="{}@hn".format(entry['id']),
+        thread_id="{}@hn".format(thread_id),
+        content_location="https://news.ycombinator.com/item?id={}".format(entry['id']),
         date=datetime.fromtimestamp(entry["created_at_i"]),
         author=entry["author"],
         title=my_title or parent_title,
@@ -1120,28 +1020,28 @@ def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Message = None) 
     return msg
 
 
-def hn_fetch_threads_by_id(thread_ids: list) -> list:
-    story_tags = ",".join(f"story_{x}" for x in thread_ids)
-    url = f"https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={len(thread_ids)}&tags=story,({story_tags})"
+def hn_fetch_threads_by_id(thread_ids):
+    story_tags = ",".join("story_{}".format(x) for x in thread_ids)
+    url = "https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={}&tags=story,({})".format(len(thread_ids), story_tags)
     hits = json.loads(fetch(url))["hits"]
     hits_by_id = {hit["objectID"]: hit for hit in hits}
     threads = [hn_parse_search_hit(hits_by_id[tid]) for tid in thread_ids if tid in hits_by_id]
 
     return threads
 
-def hn_fetch_user_threads(username: str, page: int = 1) -> list:
-    url = f"https://hn.algolia.com/api/v1/search?hitsPerPage={PREFERRED_PAGE_SIZE}&page={page-1}&tags=story,author_{username}"
+def hn_fetch_user_threads(username, page = 1):
+    url = "https://hn.algolia.com/api/v1/search?hitsPerPage={}&page={}&tags=story,author_{}".format(PREFERRED_PAGE_SIZE, page-1, username)
     print(url)
     hits = json.loads(fetch(url))["hits"]
     return [hn_parse_search_hit(hit) for hit in hits]
     
-def hn_fetch_threads(group: str = "news", page: int = 1) -> list:
+def hn_fetch_threads(group = "news", page = 1):
     rex = re.compile(r'href="item\?id=(\d+)"')
 
-    url = f"https://news.ycombinator.com/{group}"
+    url = "https://news.ycombinator.com/{}".format(group)
     # HN seems to be trigger-happy about sending 429s to some paginated requests with weird user agents
     if page != 1:
-        url += f"?p={page}"
+        url += "?p={}".format(page)
     
     html = fetch(url)
     thread_ids = list(dict.fromkeys(match.group(1) for match in rex.finditer(html)))
@@ -1149,47 +1049,54 @@ def hn_fetch_threads(group: str = "news", page: int = 1) -> list:
     return hn_fetch_threads_by_id(thread_ids)
 
 
-def hn_fetch_new_threads(page: int = 1) -> list:
-    url = f"https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&page={page-1}"
+def hn_fetch_new_threads(page = 1):
+    url = "https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&page={}".format(page-1)
     hits = json.loads(fetch(url))["hits"]
 
     return [hn_parse_search_hit(hit) for hit in hits]
 
 
-def hn_fetch_thread(entry_id: Union[str, int]) -> Message:
-    resp = fetch(f"http://hn.algolia.com/api/v1/items/{entry_id}")
-    entry: HNEntry = json.loads(resp)
+def hn_fetch_thread(entry_id):
+    resp = fetch("http://hn.algolia.com/api/v1/items/{}".format(entry_id))
+    entry = json.loads(resp)
     return hn_parse_entry(entry)
 
 
-def lb_parse_thread(thread: LBThread) -> Message:
+def datetime_from_iso(iso):
+    # strptime()'s supported UTC offset format string requires it be
+    # HHMM not HH:MM before python 3.12...
+    iso = iso.replace(":", "")
+    return datetime.strptime(iso, "%Y-%m-%dT%H%M%S.%f%z")
+
+
+def lb_parse_thread(thread):
     comments = {}
 
-    thread_body = f"{thread['description']}"
-    thread_body = f"<p>{thread['url']}</p>{thread_body}" if thread["url"] else thread_body
+    thread_body = thread['description']
+    thread_body = "<p>{}</p>{}".format(thread['url'], thread_body) if thread["url"] else thread_body
 
     ret = Message(
-        msg_id=f"{thread['short_id']}@lb",
-        thread_id=f"{thread['short_id']}@lb",
+        msg_id="{}@lb".format(thread['short_id']),
+        thread_id="{}@lb".format(thread['short_id']),
         content_location=thread["short_id_url"],
-        date=datetime.fromtimestamp(datetime.fromisoformat(thread["created_at"]).timestamp()),
+        date=datetime_from_iso(thread["created_at"]),
         author=thread["submitter_user"],
         title=thread["title"],
         body=thread_body,
         children=None if thread.get("comments") is None else [],
-        total_comments=thread["comment_count"] + 1,
+        total_comments=thread["comment_count"] + 1
     )
 
     for comment in thread.get("comments", []) or []:
         comments[comment["short_id"]] = Message(
-            msg_id=f"{comment['short_id']}@lb",
-            thread_id=f"{thread['short_id']}@lb",
+            msg_id="{}@lb".format(comment['short_id']),
+            thread_id="{}@lb".format(thread['short_id']),
             content_location=comment["url"],
-            date=datetime.fromtimestamp(datetime.fromisoformat(comment["created_at"]).timestamp()),
+            date=datetime_from_iso(comment["created_at"]),
             author=comment["commenting_user"],
-            title=f"Re: {thread['title']}",
+            title="Re: {}".format(thread['title']),
             body=comment["comment"],
-            children=[],
+            children=[]
         )
 
     for comment in thread.get("comments", []) or []:
@@ -1202,32 +1109,32 @@ def lb_parse_thread(thread: LBThread) -> Message:
     return ret
 
 
-def lb_fetch_threads(group: str = "", page: int = 1) -> list:
-    group_path = f"{group}/" if group else ""
-    resp = fetch(f"https://lobste.rs/{group_path}page/{page}.json")
-    threads: list = json.loads(resp)
+def lb_fetch_threads(group = "", page = 1):
+    group_path = group + "/" if group else ""
+    resp = fetch("https://lobste.rs/{}page/{}.json".format(group_path, page))
+    threads = json.loads(resp)
 
     return [lb_parse_thread(thread) for thread in threads]
 
 
-def lb_fetch_thread(entry_id: str) -> Message:
-    resp = fetch(f"https://lobste.rs/s/{entry_id}.json")
-    thread: LBThread = json.loads(resp)
+def lb_fetch_thread(entry_id):
+    resp = fetch("https://lobste.rs/s/{}.json".format(entry_id))
+    thread = json.loads(resp)
 
     return lb_parse_thread(thread)
 
 
-def group_set_page(group: Group, page: int) -> Group:
-    return dataclasses.replace(group, page=page)
+def group_set_page(group, page):
+    return Group(group.label, group.fetch, page=page)
 
 
-def group_advance_page(group: Group, offset: int = 1) -> Group:
+def group_advance_page(group, offset = 1):
     return group_set_page(group, page=max(1, group.page + offset))
 
 
-def group_fetch_starred_threads(db: DB, page: int = 1) -> list:
+def group_fetch_starred_threads(db, page = 1):
     thread_ids = db_load_starred_thread_ids(db, page)
-    threads_by_provider_id: dict = {}
+    threads_by_provider_id = {}
     threads = []
 
     for source_id, provider_id in (t.split("@") for t in thread_ids):
@@ -1242,26 +1149,29 @@ def group_fetch_starred_threads(db: DB, page: int = 1) -> list:
     return threads
 
 
-def group_fetch_thread(thread_id: str) -> Message:
+def group_fetch_thread(thread_id):
     (msg_id, provider_id) = thread_id.split("@")
     provider = PROVIDERS[provider_id]
 
     return provider.fetch_thread(msg_id)
 
 
-def group_for_msg_url(url: str) -> Group:
-    if (match := HN_URL_REX.match(url)) is not None:
+def group_for_msg_url(url):
+    match = HN_URL_REX.match(url)
+    if match is not None:
         msg_id = match[1]
         return Group(label=msg_id, fetch=lambda *x: [hn_fetch_thread(msg_id)])
-    elif (match := LB_URL_REX.match(url)) is not None:
+
+    match = LB_URL_REX.match(url)
+    if match is not None:
         msg_id = match[1]
         return Group(label=msg_id, fetch=lambda *x: [lb_fetch_thread(msg_id)])
 
-    msg = "Unknown URL, available patterns: \n" + "\n".join(f"- {r.pattern}" for r in [HN_URL_REX, LB_URL_REX])
+    msg = "Unknown URL, available patterns: \n" + "\n".join("- {}".format(r.pattern) for r in [HN_URL_REX, LB_URL_REX])
     raise ExitException(1, msg)
+7
 
-
-def app_safe_run(app: AppState, fn: Callable, flash: str):
+def app_safe_run(app, fn, flash):
     if flash is not None:
         app_show_flash(app, flash)
 
@@ -1270,8 +1180,8 @@ def app_safe_run(app: AppState, fn: Callable, flash: str):
     try:
         ret = fn()
     except Exception as e:
-        logging.debug("\n".join(traceback.format_exception(e)))
-        app_show_flash(app, f"Error: {e}")
+        logging.debug("\n".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        app_show_flash(app, "Error: " + str(e))
     else:
         if flash is not None:
             app_show_flash(app, None)
@@ -1279,15 +1189,16 @@ def app_safe_run(app: AppState, fn: Callable, flash: str):
     return ret
 
 
-def app_refresh_message(app: AppState) -> None:
+def app_refresh_message(app):
     app.pager_offset = 0
 
     # Converting html to lines lazily on render for easier debugging
-    if (msg := app.selected_message) is not None:
+    msg = app.selected_message
+    if msg is not None:
         msg.lines = msg_build_raw_lines(msg) if app.raw_mode else msg_build_lines(msg)
 
 
-def app_select_message(app: AppState, message: Message, show_pager: bool = False) -> None:
+def app_select_message(app, message, show_pager = False):
     app.selected_message = message
 
     app_refresh_message(app)
@@ -1306,8 +1217,8 @@ def app_select_message(app: AppState, message: Message, show_pager: bool = False
 
 
 def app_load_messages(
-    app: AppState, messages: list, selected_message_id: str = None, show_pager: bool = False
-) -> None:
+    app, messages, selected_message_id = None, show_pager = False
+):
     if selected_message_id is None and app.selected_message is not None:
         selected_message_id = app.selected_message.msg_id
 
@@ -1331,29 +1242,31 @@ def app_load_messages(
     app_select_message(app, selected_message, show_pager)
 
 
-def app_load_group(app: AppState, group: Group) -> None:
+def app_load_group(app, group):
     fn = partial(group.fetch, app.db, group.page)
-    flash = f"Fetching stories from '{group.label}' (page {group.page})..."
+    flash = "Fetching stories from '{}' (page {})...".format(group.label, group.page)
 
-    if (messages := app_safe_run(app, fn, flash=flash)) is None:
+    messages = app_safe_run(app, fn, flash=flash)
+    if messages is None:
         return
 
     app_load_messages(app, messages)
     app.group = group
 
 
-def app_close_thread(app: AppState) -> None:
+def app_close_thread(app):
     selected_thread_id = app.selected_message.thread_id if app.selected_message else None
     filtered_messages = [msg_unload(msg) for msg in app.messages if msg.is_thread]
 
     app_load_messages(app, filtered_messages, selected_message_id=selected_thread_id)
 
 
-def app_open_thread(app: AppState, thread_message: Message) -> None:
+def app_open_thread(app, thread_message):
     fn = partial(group_fetch_thread, thread_message.thread_id)
-    flash = f"Fetching thread '{thread_message.thread_id}'..."
+    flash = "Fetching thread '{}'...".format(thread_message.thread_id)
 
-    if (new_thread_message := app_safe_run(app, fn, flash=flash)) is None:
+    new_thread_message = app_safe_run(app, fn, flash=flash)
+    if new_thread_message is None:
         return
 
     app_close_thread(app)
@@ -1366,7 +1279,7 @@ def app_open_thread(app: AppState, thread_message: Message) -> None:
     app_load_messages(app, messages, selected_message_id=thread_message.msg_id, show_pager=True)
 
 
-def app_update_layout(app: AppState) -> None:
+def app_update_layout(app):
     lt = app.layout
 
     (lt.lines, lt.cols) = app.screen.getmaxyx()
@@ -1385,7 +1298,7 @@ def app_update_layout(app: AppState) -> None:
     lt.flash_menu_row = lt.lines - 1
 
 
-def app_show_help_screen(app: AppState) -> None:
+def app_show_help_screen(app):
     max_lines = app.layout.lines - 4
 
     help_lines = HELP_SCREEN.split("\n")
@@ -1400,7 +1313,7 @@ def app_show_help_screen(app: AppState) -> None:
         app.screen.getch()
 
 
-def app_show_links_screen(app: AppState) -> None:
+def app_show_links_screen(app):
     lines = app.selected_message.lines if app.selected_message is not None else []
 
     # Max amount of keys is 21 to fit on 25-line terminals
@@ -1415,7 +1328,7 @@ def app_show_links_screen(app: AppState) -> None:
     app.screen.addstr(0, 0, "Select link to open:")
 
     for i, (key, url) in enumerate(items.items()):
-        app.screen.addstr(i + 2, 0, f"{chr(key)} - {url}")
+        app.screen.addstr(i + 2, 0, "{} - {}".format(chr(key), url))
 
     app.screen.addstr(i + 4, 0, "To change browser run: BROWSER='firefox %s' ./retronews.py")
     app.screen.refresh()
@@ -1427,19 +1340,19 @@ def app_show_links_screen(app: AppState) -> None:
 
     url = items[key]
 
-    app_show_flash(app, f"Opening {url}")
+    app_show_flash(app, "Opening " + url)
     webbrowser.open(url)
 
     # Refresh window in case a terminal browser was used
     app.screen.clearok(True)
 
 
-def app_show_flash(app: AppState, flash: str) -> None:
+def app_show_flash(app, flash):
     app.flash = flash
     app_render(app)
 
 
-def app_prompt(app: AppState, prompt: str) -> str:
+def app_prompt(app, prompt):
     lt = app.layout
 
     app.screen.insstr(lt.flash_menu_row, 0, prompt.ljust(lt.cols))
@@ -1457,11 +1370,11 @@ def app_prompt(app: AppState, prompt: str) -> str:
 
     return ret
 
-def app_chgat(app: AppState, row, start, size, color) -> int:
+def app_chgat(app, row, start, size, color):
     app.screen.chgat(row, start, size, color)
     return start + size
 
-def app_render_index_row(app: AppState, row: int, message: Message) -> None:
+def app_render_index_row(app, row, message):
     cols = app.layout.cols
     date = TRUNCATE(DATECOL_FUNC(message.date), DATECOL_SIZE).rjust(DATECOL_SIZE)
     author = TRUNCATE(message.author or "<unknown>", AUTHOR_SIZE).ljust(AUTHOR_SIZE)
@@ -1476,7 +1389,7 @@ def app_render_index_row(app: AppState, row: int, message: Message) -> None:
     unread = unread_repr.rjust(UNREAD_SIZE) if message.is_thread else (' ' * UNREAD_SIZE)
 
     spacing = ' ' * COLUMN_SPACING
-    app.screen.insstr(row, 0, f"[{date}]{spacing}[{author}]{spacing}[{unread}]{spacing}{message.index_tree}{title}")
+    app.screen.insstr(row, 0, "[{}]{}[{}]{}[{}]{}{}{}".format(date, spacing, author, spacing, unread, spacing, message.index_tree, title))
 
     if is_selected:
         cursor_attr = curses.A_REVERSE if app.monochrome else 0
@@ -1494,7 +1407,7 @@ def app_render_index_row(app: AppState, row: int, message: Message) -> None:
         app_chgat(app, row, start, cols - start, subject_attr)
 
 
-def app_render_index(app: AppState) -> None:
+def app_render_index(app):
     height = app.layout.index_height
 
     offset = app.selected_message.index_position - height // 2 if app.selected_message else 0
@@ -1507,7 +1420,7 @@ def app_render_index(app: AppState) -> None:
         app_render_index_row(app, app.layout.index_start + i, app.messages[i + offset])
 
 
-def app_get_pager_line_attr(app: AppState, line: str) -> int:
+def app_get_pager_line_attr(app, line):
     if line.startswith("Content-Location: "):
         return app.colors["tree"]
     elif line.startswith("Date: "):
@@ -1530,7 +1443,7 @@ def app_get_pager_line_attr(app: AppState, line: str) -> int:
         return 0
 
 
-def app_render_pager_line(app: AppState, row: int, line: str) -> None:
+def app_render_pager_line(app, row, line):
     hl_lines = not app.raw_mode
     line_attr = app_get_pager_line_attr(app, line) if hl_lines else 0
     hl_urls = line_attr == 0 and hl_lines
@@ -1547,7 +1460,7 @@ def app_render_pager_line(app: AppState, row: int, line: str) -> None:
         app.screen.addstr(part, part_attr)
 
 
-def app_render_pager(app: AppState) -> None:
+def app_render_pager(app):
     message = app.selected_message
     start = app.layout.pager_start
     height = app.layout.pager_height
@@ -1560,28 +1473,28 @@ def app_render_pager(app: AppState) -> None:
         app_render_pager_line(app, i + start, line)
 
 
-def app_render_top_menu(app: AppState) -> None:
+def app_render_top_menu(app):
     lt = app.layout
     cols = lt.cols
     base_attr = curses.A_REVERSE if app.monochrome else curses.A_BOLD
     app.screen.insstr(lt.top_menu_row, 0, HELP_MENU[:cols].ljust(cols), app.colors["menu"] | base_attr)
 
 
-def app_render_middle_menu(app: AppState) -> None:
-    if (row := app.layout.middle_menu_row) is None:
+def app_render_middle_menu(app):
+    row = app.layout.middle_menu_row
+    message = app.selected_message
+    if row is None or message is None:
         return
 
-    if (message := app.selected_message) is None:
-        return
-
-    if (thread_message := app.messages_by_id.get(message.thread_id)) is None:
+    thread_message = app.messages_by_id.get(message.thread_id)
+    if thread_message is None:
         return
 
     cols = app.layout.cols
     total = thread_message.total_comments
     unread = total - thread_message.read_comments
 
-    text = f"--({unread}/{total} unread)"
+    text = "--({}/{} unread)".format(unread, total)
     if thread_message.flags.starred:
         text += "--(starred thread)"
     if app.raw_mode:
@@ -1592,7 +1505,7 @@ def app_render_middle_menu(app: AppState) -> None:
     app.screen.insstr(row, 0, text, app.colors["menu"] | base_attr)
 
 
-def app_render_bottom_menu(app: AppState) -> None:
+def app_render_bottom_menu(app):
     lt = app.layout
     base_attr = curses.A_REVERSE if app.monochrome else curses.A_BOLD
 
@@ -1603,14 +1516,14 @@ def app_render_bottom_menu(app: AppState) -> None:
         is_active = group.label == app.group.label
         item_attr = app.colors["menu_active"] | curses.A_BOLD if is_active else app.colors["menu"]
         item_attr = item_attr | base_attr
-        app.screen.addstr(f"{i+1}:{group.label}", item_attr)
+        app.screen.addstr("{}:{}".format(i+1, group.label), item_attr)
         app.screen.addstr("  ", app.colors["menu"] | base_attr)
 
-    page_text = f"page: {app.group.page}"
+    page_text = "page: {}".format(app.group.page)
     app.screen.insstr(lt.bottom_menu_row, lt.cols - len(page_text), page_text, app.colors["menu"] | base_attr)
 
 
-def app_render(app: AppState) -> None:
+def app_render(app):
     app_update_layout(app)
     app.screen.erase()
     app_render_index(app)
@@ -1622,7 +1535,7 @@ def app_render(app: AppState) -> None:
     app.screen.refresh()
 
 
-def app_init_colors(app: AppState) -> None:
+def app_init_colors(app):
     if app.monochrome:
         app.colors = defaultdict(lambda: 0)
         return
@@ -1637,7 +1550,7 @@ def app_init_colors(app: AppState) -> None:
         app.monochrome = True
 
 
-def app_main(screen: Window, db: DB, group: Group, ascii: bool, monochrome: bool) -> int:
+def app_main(screen, db, group, ascii, monochrome):
     curses.curs_set(0)
 
     app = AppState(screen=screen, db=db, group=group, ascii=ascii, monochrome=monochrome)
@@ -1652,9 +1565,9 @@ def app_main(screen: Window, db: DB, group: Group, ascii: bool, monochrome: bool
         KEY_BINDINGS.get(c, cmd_unknown)(app)
 
 
-def setup_logging(path: str) -> None:
+def setup_logging(path):
     if path is None:
-        return logging.disable()
+        return logging.disable(logging.CRITICAL)
 
     format = "%(asctime)s %(levelname)s: %(message)s"
     stream = sys.stderr if path == "-" else open(path, "a")
@@ -1662,7 +1575,7 @@ def setup_logging(path: str) -> None:
     logging.debug("Session started")
 
 
-def run_rcfile(path: str) -> None:
+def run_rcfile(path):
     path = os.path.expanduser(path)
 
     if not os.path.isfile(path):
@@ -1691,8 +1604,8 @@ if __name__ == "__main__":
     setup_logging(args.logfile)
     run_rcfile(args.rcfile)
 
-    if (path := args.render) is not None:
-        with open(path) as fp:
+    if args.render is not None:
+        with open(args.render) as fp:
             print(html_render(fp.read()))
         sys.exit(0)
 
@@ -1713,7 +1626,7 @@ if __name__ == "__main__":
             sys.stderr.write(e.message + "\n")
         ret = e.code
     except BaseException as e:
-        sys.stderr.write("\n".join(traceback.format_exception(e)))
+        sys.stderr.write("\n".join(traceback.format_exception(type(e), e, e.__traceback__)))
         ret = 1
     finally:
         db.close()
