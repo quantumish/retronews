@@ -245,7 +245,6 @@ class Message:
     date: datetime
     author: Optional[str]
     title: str
-    misc_headers: dict = None
     body: Optional[str] = None
     lines: list[str] = dataclasses.field(default_factory=list)
     parent: Optional["Message"] = None
@@ -255,6 +254,7 @@ class Message:
     total_comments: int = 0
     index_position: int = 0
     index_tree: str = ""
+    url: Optional[str] = None
 
     @property
     def is_read(self) -> bool:
@@ -339,7 +339,6 @@ class LBThread(TypedDict):
     submitter_user: str
     comment_count: int
     comments: Optional[list[Any]]
-    tags: list
 
 class LBComment(TypedDict):
     short_id: str
@@ -677,7 +676,7 @@ def fetch(url: str) -> str:
     headers = {}
     if USER_AGENT is not None:
         headers["User-Agent"] = USER_AGENT
-        
+
     req = urllib.request.Request(url, headers=headers)
     resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT).read().decode()
 
@@ -1020,7 +1019,7 @@ def db_load_starred_thread_ids(db: DB, page: int = 1) -> list[str]:
 def msg_populate_total_count(msg: Message):
     children = msg.children or []
     msg.total_count = 0
-    
+
     if len(children) == 0:
         return
 
@@ -1066,14 +1065,9 @@ def msg_build_lines(msg: Message) -> list[str]:
         f"Date: {msg.date.strftime('%Y-%m-%d %H:%M')}",
         f"From: {msg.author or '<unknown>'}",
         f"Subject: {msg.title}",
+        ""
     ]
 
-    if msg.misc_headers is not None:
-        for name, val in msg.misc_headers.items():
-            lines.append(f"{name}: {val}")
-
-    lines.append("")
-    
     lines += html_render(msg.body or "").split("\n") if not msg.is_deleted else ["<deleted>"]
 
     return lines
@@ -1094,6 +1088,7 @@ def hn_parse_search_hit(hit: HNSearchHit) -> Message:
         author=hit["author"],
         title=html.unescape(hit["title"]),
         total_comments=(hit["num_comments"] or 0) + 1,
+        url=hit["url"],
     )
 
 
@@ -1117,6 +1112,7 @@ def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Optional[Message
         title=my_title or parent_title,
         body=body,
         parent=parent,
+        url=entry["url"],
     )
 
     msg.children = [hn_parse_entry(child, thread_id, msg) for child in entry["children"]]
@@ -1138,7 +1134,7 @@ def hn_fetch_user_threads(username: str, page: int = 1) -> list[Message]:
     print(url)
     hits = json.loads(fetch(url))["hits"]
     return [hn_parse_search_hit(hit) for hit in hits]
-    
+
 def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
     rex = re.compile(r'href="item\?id=(\d+)"')
 
@@ -1146,7 +1142,7 @@ def hn_fetch_threads(group: str = "news", page: int = 1) -> list[Message]:
     # HN seems to be trigger-happy about sending 429s to some paginated requests with weird user agents
     if page != 1:
         url += f"?p={page}"
-    
+
     html = fetch(url)
     thread_ids = list(dict.fromkeys(match.group(1) for match in rex.finditer(html)))
 
@@ -1182,7 +1178,7 @@ def lb_parse_thread(thread: LBThread) -> Message:
         body=thread_body,
         children=None if thread.get("comments") is None else [],
         total_comments=thread["comment_count"] + 1,
-        misc_headers={"Cc": ", ".join(thread['tags'])}
+        url=thread["url"],
     )
 
     for comment in thread.get("comments", []) or []:
@@ -1254,16 +1250,14 @@ def group_fetch_thread(thread_id: str) -> Message:
     return provider.fetch_thread(msg_id)
 
 
-def group_for_msg_url(url: str) -> Group:
+def group_for_msg_url(url: str) -> Optional[Group]:
     if (match := HN_URL_REX.match(url)) is not None:
         msg_id = match[1]
         return Group(label=msg_id, fetch=lambda *x: [hn_fetch_thread(msg_id)])
     elif (match := LB_URL_REX.match(url)) is not None:
         msg_id = match[1]
         return Group(label=msg_id, fetch=lambda *x: [lb_fetch_thread(msg_id)])
-
-    msg = "Unknown URL, available patterns: \n" + "\n".join(f"- {r.pattern}" for r in [HN_URL_REX, LB_URL_REX])
-    raise ExitException(1, msg)
+    return None
 
 
 def app_safe_run(app: AppState, fn: Callable[[], T], flash: Optional[str]) -> Optional[T]:
@@ -1408,35 +1402,44 @@ def app_show_help_screen(app: AppState) -> None:
 def app_show_links_screen(app: AppState) -> None:
     lines = app.selected_message.lines if app.selected_message is not None else []
 
-    # Max amount of keys is 21 to fit on 25-line terminals
-    keys = "1234567890abcdefghijk"
-    urls = URL_REX.findall(" ".join(lines))
-    items = dict(zip((ord(k) for k in keys), urls))
+    urls = set(URL_REX.findall(" ".join(lines[1:])))
+    if app.selected_message is not None and app.selected_message.url is not None:
+        urls.insert(app.selected_message.url)
 
-    if len(items) == 0:
-        return app_show_flash(app, "No links available for opening")
+    if len(urls) == 0:
+        return app_show_flash(app, f"No links available for opening {app.selected_message.url}")
+    elif len(urls) == 1:
+        url = urls.pop()
+    else:
+        # Max amount of keys is 21 to fit on 25-line terminals
+        keys = "1234567890abcdefghijk"
+        items = dict(zip((ord(k) for k in keys), urls))
 
-    app.screen.erase()
-    app.screen.addstr(0, 0, "Select link to open:")
+        app.screen.erase()
+        app.screen.addstr(0, 0, "Select link to open:")
 
-    for i, (key, url) in enumerate(items.items()):
-        app.screen.addstr(i + 2, 0, f"{chr(key)} - {url}")
+        for i, (key, url) in enumerate(items.items()):
+            app.screen.addstr(i + 2, 0, f"{chr(key)} - {url}")
 
-    app.screen.addstr(i + 4, 0, "To change browser run: BROWSER='firefox %s' ./retronews.py")
-    app.screen.refresh()
+        app.screen.addstr(i + 4, 0, "To change browser run: BROWSER='firefox %s' ./retronews.py")
+        app.screen.refresh()
 
-    key = app.screen.getch()
+        key = app.screen.getch()
 
-    if key not in items.keys():
-        return app_show_flash(app, "Unknown key")
+        if key not in items.keys():
+            return app_show_flash(app, "Unknown key")
 
-    url = items[key]
+        url = items[key]
 
-    app_show_flash(app, f"Opening {url}")
-    webbrowser.open(url)
+    group = group_for_msg_url(url)
+    if group is not None:
+        app_load_group(app, group)
+    else:
+        app_show_flash(app, f"Opening {url}")
+        webbrowser.open(url)
 
-    # Refresh window in case a terminal browser was used
-    app.screen.clearok(True)
+        # Refresh window in case a terminal browser was used
+        app.screen.clearok(True)
 
 
 def app_show_flash(app: AppState, flash: Optional[str]) -> None:
@@ -1706,6 +1709,11 @@ if __name__ == "__main__":
 
         if args.msg:
             group = group_for_msg_url(args.msg)
+            if group is None:
+                msg = "Unknown URL, available patterns: \n" + "\n".join(
+                    f"- {r.pattern}" for r in [HN_URL_REX, LB_URL_REX]
+                )
+                raise ExitException(1, msg)
         else:
             group = GROUP_TABS[args.tab - 1]
 
