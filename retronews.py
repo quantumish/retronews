@@ -225,6 +225,7 @@ GROUP_TABS: list[Group] = [
     Group(label="New HN", fetch=lambda db, page: hn_fetch_new_threads(page)),
     Group(label="Ask HN", fetch=lambda db, page: hn_fetch_threads("ask", page)),
     Group(label="Show HN", fetch=lambda db, page: hn_fetch_threads("show", page)),
+    Group(label="Active HN", fetch=lambda db, page: hn_fetch_threads("active", page)),
     Group(label="Front LB", fetch=lambda db, page: lb_fetch_threads("", page)),
     Group(label="New LB", fetch=lambda db, page: lb_fetch_threads("newest", page)),
     Group(label="Starred", fetch=lambda db, page: group_fetch_starred_threads(db, page)),
@@ -1088,7 +1089,7 @@ def hn_parse_search_hit(hit: HNSearchHit) -> Message:
         author=hit["author"],
         title=html.unescape(hit["title"]),
         total_comments=(hit["num_comments"] or 0) + 1,
-        url=hit["url"],
+        url=hit["url"] if "url" in hit else None,
     )
 
 
@@ -1112,7 +1113,7 @@ def hn_parse_entry(entry: HNEntry, thread_id: str = "", parent: Optional[Message
         title=my_title or parent_title,
         body=body,
         parent=parent,
-        url=entry["url"],
+        url=entry["url"] if "url" in entry else None,
     )
 
     msg.children = [hn_parse_entry(child, thread_id, msg) for child in entry["children"]]
@@ -1178,7 +1179,7 @@ def lb_parse_thread(thread: LBThread) -> Message:
         body=thread_body,
         children=None if thread.get("comments") is None else [],
         total_comments=thread["comment_count"] + 1,
-        url=thread["url"],
+        url=thread["url"] if "url" in thread else None,
     )
 
     for comment in thread.get("comments", []) or []:
@@ -1407,7 +1408,7 @@ def app_show_links_screen(app: AppState) -> None:
         urls.add(app.selected_message.url)
 
     if len(urls) == 0:
-        return app_show_flash(app, f"No links available for opening {app.selected_message.url}")
+        return app_show_flash(app, f"No links available for opening")
     elif len(urls) == 1:
         url = urls.pop()
     else:
