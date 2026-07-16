@@ -1404,7 +1404,7 @@ def app_show_links_screen(app: AppState) -> None:
 
     urls = set(URL_REX.findall(" ".join(lines[1:])))
     if app.selected_message is not None and app.selected_message.url is not None:
-        urls.insert(app.selected_message.url)
+        urls.add(app.selected_message.url)
 
     if len(urls) == 0:
         return app_show_flash(app, f"No links available for opening {app.selected_message.url}")
